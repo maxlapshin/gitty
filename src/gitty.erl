@@ -10,12 +10,31 @@ show(Git, Path) when is_list(Path) ->
 
 show(Git, Path) ->
   {ok, commit, Master} = read_object(Git, read_file(filename:join(Git, "refs/heads/master"))),
-  TreeSHA1 = proplists:get_value(tree, Master),
+  {ok, tree, Tree} = read_object(Git, proplists:get_value(tree, Master)),
 
-  {ok, tree, Tree} = read_object(Git, TreeSHA1),
-  {_,blob,_,Blob} = lists:keyfind(Path, 1, Tree),
+  Parts = binary:split(Path, <<"/">>, [global]),
+
+  {ok, Blob} = lookup(Git, Parts, Tree),
 
   {ok, Blob}.
+
+lookup(Git, [Part|Parts], Tree) ->
+  case lists:keyfind(Part, 1, Tree) of
+    {Part,_,SHA1} ->
+      case read_object(Git, SHA1) of
+        {ok, blob, Blob} when length(Parts) == 0 ->
+          {ok, Blob};
+        {ok, tree, Tree1} when length(Parts) > 0 ->
+          lookup(Git, Parts, Tree1);
+        {ok, _, _} ->
+          {error, eisdir};
+        {error, Error} ->
+          {error, Error}
+      end;
+    false ->
+      {error, enoent}
+  end.
+
 
 
 unhex(<<>>) -> <<>>;
@@ -39,30 +58,24 @@ read_object(Git, SHA1hex) when length(SHA1hex) == 40 ->
 read_object(Git, SHA1) when is_binary(SHA1)->
   {ok, Type, Content} = read_raw_object(Git, SHA1),
   C = case Type of
-    tree -> parse_tree(Git, Content);
-    commit -> parse_commit(Git, Content);
+    tree -> parse_tree(Content);
+    commit -> parse_commit(Content);
     blob -> Content;
     _ -> Content
   end,
   {ok, Type, C}.
 
 
-parse_tree(Git, <<>>) ->
+parse_tree(<<>>) ->
   [];
-parse_tree(Git, Content) ->
+parse_tree(Content) ->
   [ModeName, <<SHA1:20/binary, Rest/binary>>] = binary:split(Content, <<0>>),
-  [_Mode, Name] = binary:split(ModeName, <<" ">>),
+  [Mode, Name] = binary:split(ModeName, <<" ">>),
   SHA1hex = hex(SHA1),
-  % ?D({Name, SHA1hex}),
-  case read_object(Git, SHA1hex) of
-    {ok, tree, List} ->
-      [{<<Name/binary, "/", N/binary>>, Type, SH, Cont} || {N, Type, SH, Cont} <- List] ++ parse_tree(Git, Rest);
-    {ok, Type, C} ->
-      [{Name, Type, hex(SHA1), C}|parse_tree(Git, Rest)]
-  end.
+  [{Name,Mode, hex(SHA1)}|parse_tree(Rest)].
 
 
-parse_commit(_Git, Commit) ->
+parse_commit(Commit) ->
   [Header, Message] = binary:split(Commit, <<"\n\n">>),
   [<<"tree ",TreeHex/binary>>|_Headers] = binary:split(Header, <<"\n">>),
   [{tree,TreeHex},{message,Message}].
