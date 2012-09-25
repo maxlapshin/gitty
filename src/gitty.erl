@@ -1,29 +1,80 @@
 -module(gitty).
 
--export([show/2]).
+-export([show/2, list/2]).
 
 -include_lib("eunit/include/eunit.hrl").
 
+-define(D(X), io:format("~p:~p ~240p~n", [?MODULE, ?LINE, X])).
+-define(DBG(Fmt,X), io:format("~p:~p "++Fmt++"~n", [?MODULE, ?LINE| X])).
 
-show(Git, Path) when is_list(Path) ->
-  show(Git, list_to_binary(Path));
 
-show(Git, Path) ->
-  {ok, commit, Master} = read_object(Git, read_file(filename:join(Git, "refs/heads/master"))),
-  {ok, tree, Tree} = read_object(Git, proplists:get_value(tree, Master)),
-
+show(Git, RawPath) ->
+  {Tree, Path} = prepare_path(Git, RawPath),
+  
   Parts = binary:split(Path, <<"/">>, [global]),
 
-  {ok, Blob} = lookup(Git, Parts, Tree),
+  {ok, Type, Blob} = lookup(Git, Parts, Tree),
 
-  {ok, Blob}.
+  {ok, Type, Blob}.
+
+
+
+list(Git, Path) when is_list(Path) ->
+  list(Git, list_to_binary(Path));
+
+list(Git, Path) ->
+  case show(Git, Path) of
+    {ok, tree, Tree} ->
+      list_tree(Git, Path, Tree);
+    {ok, _, _} ->
+      {error, enotdir};
+    {error, Error} ->
+      {error, Error}
+  end.
+
+
+list_tree(Git, Path, [{Name,Mode,SHA1}|Tree]) ->
+  FullName = <<Path/binary, "/", Name/binary>>,
+  case read_object(Git, SHA1) of
+    {ok, blob, _Blob} ->
+      [{FullName, Mode, SHA1}|list_tree(Git,Path,Tree)];
+    {ok, tree, InnerTree} ->
+      Content = list_tree(Git, FullName, InnerTree),
+      Content ++ list_tree(Git,Path,Tree)
+  end;
+
+list_tree(_, _, []) ->
+  [].
+
+
+
+prepare_path(Git, Path) when is_list(Path) ->
+  prepare_path(Git, list_to_binary(Path));
+
+prepare_path(Git, Path) when is_binary(Path) ->
+  {SHA1, RPath} = case binary:split(Path, <<":">>) of
+    [Branch, RealPath] when size(Branch) == 40 ->
+      {Branch, RealPath};
+    [Branch, RealPath] ->
+      {read_file(filename:join([Git, "refs/heads", Branch])), RealPath};
+    [RealPath] ->
+      {read_file(filename:join([Git, "refs/heads/master"])), RealPath}
+  end,
+  {ok, commit, Head} = read_object(Git, SHA1),
+  {ok, tree, Tree} = read_object(Git, proplists:get_value(tree, Head)),
+  {Tree, RPath}.
+
+
+
+
+
 
 lookup(Git, [Part|Parts], Tree) ->
   case lists:keyfind(Part, 1, Tree) of
     {Part,_,SHA1} ->
       case read_object(Git, SHA1) of
-        {ok, blob, Blob} when length(Parts) == 0 ->
-          {ok, Blob};
+        {ok, Type, Blob} when length(Parts) == 0 ->
+          {ok, Type, Blob};
         {ok, tree, Tree1} when length(Parts) > 0 ->
           lookup(Git, Parts, Tree1);
         {ok, _, _} ->
