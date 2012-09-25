@@ -1,0 +1,12 @@
+{application, gitty,
+ [
+  {description, "Raw git access"},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { gitty_app, []}},
+  {env, []}
+ ]}.
