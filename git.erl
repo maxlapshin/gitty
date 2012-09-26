@@ -10,7 +10,7 @@
 
 test1(0, _Git) -> ok;
 test1(N, Git) ->
-  {ok, Git1, blob, Blob} = gitty:show(Git, "src/gitty.app.src"),
+  {ok, Git1, blob, Blob} = gitty:show(Git, "master:src/gitty.app.src"),
   size(Blob) == 228 orelse error({invalid_size, size(Blob)}),
   test1(N - 1, Git1).
 
@@ -23,15 +23,17 @@ test2(N) ->
 main([]) ->
   code:add_pathz("ebin"),
 
-  N = 1000,
+  N = 1,
   {_T1, ok} = timer:tc(fun() -> test1(N, ".git") end),
   {_T2, ok} = timer:tc(fun() -> test2(N) end),
+
+  % ?D(gitty:show("test/dot_git", "d8c6431e0a82b6b1bd4db339ee536f8bd4099c8f")),
   % ?D({_T1,_T2}),
   % ?D(gitty:list(".git", "")),
   {ok, _Git, _List} = gitty:list("test/dot_git", "nonpack:test"),
   % ?D(Git),
-  % ?D(List),
+  ?D(_List),
 
-  
+
   ok.
 

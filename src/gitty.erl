@@ -22,7 +22,21 @@
   objects = []
 }).
 
-show(Git, RawPath) ->
+
+show(Git, Path) when is_list(Path) ->
+  show(Git, list_to_binary(Path));
+
+show(Git, Path) when is_list(Git) ->
+  show(git(Git), Path);
+
+show(#git{} = Git, Path) ->
+  case re:run(Path, ":") of
+    {match, _} -> show_file_by_path(Git, Path);
+    nomatch when size(Path) == 40 -> read_object(Git, Path);
+    _ -> {error, enoent}
+  end.
+
+show_file_by_path(Git, RawPath) ->
   {ok, Git1, Tree, Path} = prepare_path(git(Git), RawPath),
 
   {ok, Git2, Type, Blob} = case Path of
@@ -81,17 +95,17 @@ prepare_path(Git, Path) when is_list(Path) ->
   prepare_path(Git, list_to_binary(Path));
 
 prepare_path(#git{path = Repo} = Git, Path) when is_binary(Path) ->
-  {SHA1, RPath} = case binary:split(Path, <<":">>) of
-    [Branch, RealPath] when size(Branch) == 40 ->
-      {Branch, RealPath};
-    [Branch, RealPath] ->
-      {read_file(filename:join([Repo, "refs/heads", Branch])), RealPath};
-    [RealPath] ->
-      {read_file(filename:join([Repo, "refs/heads/master"])), RealPath}
+  {SHA1, RealPath} = case binary:split(Path, <<":">>) of
+    [Branch, Path_] when size(Branch) == 40 ->
+      {Branch, Path_};
+    [Branch, Path_] ->
+      {read_file(filename:join([Repo, "refs/heads", Branch])), Path_};
+    [Path_] ->
+      {read_file(filename:join([Repo, "refs/heads/master"])), Path_}
   end,
   {ok, Git1, commit, Head} = read_object(Git, SHA1),
   {ok, Git2, tree, Tree} = read_object(Git1, proplists:get_value(tree, Head)),
-  {ok, Git2, Tree, RPath}.
+  {ok, Git2, Tree, RealPath}.
 
 
 
@@ -149,7 +163,6 @@ parse_tree(<<>>) ->
 parse_tree(Content) ->
   [ModeName, <<SHA1:20/binary, Rest/binary>>] = binary:split(Content, <<0>>),
   [Mode, Name] = binary:split(ModeName, <<" ">>),
-  SHA1hex = hex(SHA1),
   [{Name,Mode, hex(SHA1)}|parse_tree(Rest)].
 
 
@@ -166,6 +179,7 @@ read_raw_object(#git{path = Repo} = Git, <<Prefix:2/binary, Postfix/binary>> = S
     {ok, <<16#78, W2, _/binary>> = Zip} when (16#7800 bor W2) rem 31 == 0 -> 
       [Header, Content] = binary:split(unzip(Zip), <<0>>),
       [Type, Size] = binary:split(Header, <<" ">>),
+      ?D({read_direct,SHA1hex}),
       unpack_size(Size) == size(Content) orelse erlang:error({invalid_size, unpack_size(Size), size(Content)}),
       {ok, Git, unpack_type(Type), Content};
     % git-ruby/internal/loose.rb#unpack_object_header_gently
@@ -230,6 +244,7 @@ lookup_via_index(#git{path = Repo} = Git, [IndexFile|Indexes], SHA1) ->
       lookup_via_index(Git1, Indexes, SHA1);
     Offset ->
       {ok, P} = file:open(filename:join([Repo,"objects/pack", IndexFile++".pack"]), [binary,raw,read]),
+      ?D({unpack,SHA1}),
       {ok, Type, Content} = unpack_object(P, Offset, Index),
 
       file:close(P),
@@ -248,7 +263,7 @@ unpack_object(P, Offset, Index) ->
       {ok, 3, T, (Size3 bsl 11) bor (Size2 bsl 4) bor Size1, Bin_}
   end,
   Type1 = unpack_type(TypeInt),
-  % ?D({reading,SHA1,Type1,Offset,Size}),
+  ?D({reading,Type1,Offset,Size}),
 
   {ok, Type, Content} = if Type1 == ofs_delta orelse Type1 ==ref_delta ->
     {ok, Type_, C} = read_delta_from_file(P, Offset, Offset + HeaderSize, Type1, Size, Index),
@@ -353,5 +368,36 @@ unzip(Zip) ->
 
 
 
+test_fixture_dir() ->
+  code:lib_dir(gitty, test).
+
+fixture(Name) ->
+  filename:join(test_fixture_dir(), Name).
+
+hex_test() ->
+  ?assertEqual(<<"0102030405060708090a0b0c0d0e0f1011121314">>, hex(<<1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20>>)).
+
+unhex_test() ->
+  ?assertEqual(<<1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20>>, unhex(<<"0102030405060708090a0b0c0d0e0f1011121314">>)).
+
+
+double_check(Fixture, SHA1) ->
+  Reply1 = show(fixture(Fixture), SHA1),
+  ?assertMatch({ok, _, blob, _}, Reply1),
+  {ok, _, blob, Blob1} = Reply1,
+  Cmd = binary_to_list(iolist_to_binary(["git --bare --git-dir " ,fixture(Fixture), " show ", SHA1])),
+  Blob2 = iolist_to_binary(os:cmd(Cmd)),
+  ?assertEqual(Blob2, Blob1).
+
+show_test() ->
+  double_check("dot_git", "eeccc934cad8bb74624ed388988fe79c26e6900d"), % in raw file
+  double_check("dot_git", "6fc18f69e9b74eafb4a58a6fcbd218adc0d80c36"), % blob in pack
+  double_check("dot_git", "d8c6431e0a82b6b1bd4db339ee536f8bd4099c8f"), % ofs_delta in pack
+  % double_check("dot_git", "6fc18f69e9b74eafb4a58a6fcbd218adc0d8bbaa"), % unexistent
+  ok.
+
 read1_test() ->
-  ?assertEqual({ok, <<"80f136f\n">>}, show("test/fixtures/dot_git", "test/fixtures/rev_parse")).
+  ?assertMatch({ok, _, blob, <<"80f136f\n">>}, show(fixture("dot_git"), "nonpack:test/fixtures/rev_parse")).
+
+
+
