@@ -11,21 +11,23 @@
 -define(OFS_DELTA, 6).
 -define(REF_DELTA, 7).
 
+
+-record(git, {
+  path
+}).
+
 show(Git, RawPath) ->
-  {Tree, Path} = prepare_path(Git, RawPath),
-  
-  
+  {ok, Git1, Tree, Path} = prepare_path(git(Git), RawPath),
 
-
-  {ok, Type, Blob} = case Path of
+  {ok, Git2, Type, Blob} = case Path of
     <<>> -> 
-      {ok, tree, Tree} ;
+      {ok, Git1, tree, Tree} ;
     _ ->
       Parts = binary:split(Path, <<"/">>, [global]),
-      lookup(Git, Parts, Tree)
+      lookup(Git1, Parts, Tree)
   end,
 
-  {ok, Type, Blob}.
+  {ok, Git2, Type, Blob}.
 
 
 
@@ -34,9 +36,9 @@ list(Git, Path) when is_list(Path) ->
 
 list(Git, Path) ->
   case show(Git, Path) of
-    {ok, tree, Tree} ->
-      list_tree(Git, Path, Tree);
-    {ok, _, _} ->
+    {ok, Git1, tree, Tree} ->
+      list_tree(Git1, Path, Tree);
+    {ok, _, _, _} ->
       {error, enotdir};
     {error, Error} ->
       {error, Error}
@@ -49,36 +51,41 @@ list_tree(Git, Path, [{Name,Mode,SHA1}|Tree]) ->
     _ -> <<Path/binary, "/", Name/binary>>
   end,
   case (catch read_object(Git, SHA1)) of
-    {ok, blob, _Blob} ->
-      [{FullName, Mode, SHA1}|list_tree(Git,Path,Tree)];
-    {ok, tree, InnerTree} ->
-      Content = list_tree(Git, FullName, InnerTree),
-      Content ++ list_tree(Git,Path,Tree);
+    {ok, Git1, blob, _Blob} ->
+      {ok, Git2, Content} = list_tree(Git1,Path,Tree),
+      {ok, Git2, [{FullName, Mode, SHA1}|Content]};
+    {ok, Git1, tree, InnerTree} ->
+      {ok, Git2, Content1} = list_tree(Git1, FullName, InnerTree),
+      {ok, Git3, Content2} = list_tree(Git,Path,Tree),
+      {ok, Git3, Content1 ++ Content2};
     {unimplemented,Error} ->
       ?D({unimplemented,Error, Path, Name, SHA1}),
       list_tree(Git, Path, Tree)
   end;
 
-list_tree(_, _, []) ->
-  [].
+list_tree(Git, _, []) ->
+  {ok, Git, []}.
 
+
+git(Path) when is_list(Path) -> #git{path = Path};
+git(#git{} = Git) -> Git.
 
 
 prepare_path(Git, Path) when is_list(Path) ->
   prepare_path(Git, list_to_binary(Path));
 
-prepare_path(Git, Path) when is_binary(Path) ->
+prepare_path(#git{path = Repo} = Git, Path) when is_binary(Path) ->
   {SHA1, RPath} = case binary:split(Path, <<":">>) of
     [Branch, RealPath] when size(Branch) == 40 ->
       {Branch, RealPath};
     [Branch, RealPath] ->
-      {read_file(filename:join([Git, "refs/heads", Branch])), RealPath};
+      {read_file(filename:join([Repo, "refs/heads", Branch])), RealPath};
     [RealPath] ->
-      {read_file(filename:join([Git, "refs/heads/master"])), RealPath}
+      {read_file(filename:join([Repo, "refs/heads/master"])), RealPath}
   end,
-  {ok, commit, Head} = read_object(Git, SHA1),
-  {ok, tree, Tree} = read_object(Git, proplists:get_value(tree, Head)),
-  {Tree, RPath}.
+  {ok, Git1, commit, Head} = read_object(Git, SHA1),
+  {ok, Git2, tree, Tree} = read_object(Git1, proplists:get_value(tree, Head)),
+  {ok, Git2, Tree, RPath}.
 
 
 
@@ -87,11 +94,11 @@ lookup(Git, [Part|Parts], Tree) ->
   case lists:keyfind(Part, 1, Tree) of
     {Part,_,SHA1} ->
       case read_object(Git, SHA1) of
-        {ok, Type, Blob} when length(Parts) == 0 ->
-          {ok, Type, Blob};
-        {ok, tree, Tree1} when length(Parts) > 0 ->
-          lookup(Git, Parts, Tree1);
-        {ok, _, _} ->
+        {ok, Git1, Type, Blob} when length(Parts) == 0 ->
+          {ok, Git1, Type, Blob};
+        {ok, Git1, tree, Tree1} when length(Parts) > 0 ->
+          lookup(Git1, Parts, Tree1);
+        {ok, _, _, _} ->
           {error, eisdir};
         {error, Error} ->
           {error, Error}
@@ -121,14 +128,14 @@ read_object(Git, SHA1hex) when length(SHA1hex) == 40 ->
   read_object(Git, list_to_binary(SHA1hex));
 
 read_object(Git, SHA1) when is_binary(SHA1)->
-  {ok, Type, Content} = read_raw_object(Git, SHA1),
+  {ok, Git1, Type, Content} = read_raw_object(Git, SHA1),
   C = case Type of
     tree -> parse_tree(Content);
     commit -> parse_commit(Content);
     blob -> Content;
     _ -> Content
   end,
-  {ok, Type, C}.
+  {ok, Git1, Type, C}.
 
 
 parse_tree(<<>>) ->
@@ -146,15 +153,15 @@ parse_commit(Commit) ->
   [{tree,TreeHex},{message,Message}].
 
 
-read_raw_object(Git, <<Prefix:2/binary, Postfix/binary>> = SHA1hex) when size(SHA1hex) == 40 ->
-  DirectPath = filename:join([Git, "objects", Prefix, Postfix]),
+read_raw_object(#git{path = Repo} = Git, <<Prefix:2/binary, Postfix/binary>> = SHA1hex) when size(SHA1hex) == 40 ->
+  DirectPath = filename:join([Repo, "objects", Prefix, Postfix]),
   case file:read_file(DirectPath) of
     % git-ruby/internal/loose.rb#legacy_loose_object?
     {ok, <<16#78, W2, _/binary>> = Zip} when (16#7800 bor W2) rem 31 == 0 -> 
       [Header, Content] = binary:split(unzip(Zip), <<0>>),
       [Type, Size] = binary:split(Header, <<" ">>),
       unpack_size(Size) == size(Content) orelse erlang:error({invalid_size, unpack_size(Size), size(Content)}),
-      {ok, unpack_type(Type), Content};
+      {ok, Git, unpack_type(Type), Content};
     % git-ruby/internal/loose.rb#unpack_object_header_gently
     % {ok, <<0:1, _Type:3, _Size1:4, Zip/binary>>} -> unzip(Zip);
     % {ok, <<1:1, _Type:3, _Size1:4, 0:1, _Size2:7, Zip/binary>>} -> unzip(Zip);
@@ -166,14 +173,14 @@ read_raw_object(Git, <<Prefix:2/binary, Postfix/binary>> = SHA1hex) when size(SH
 
 
 
-read_packed_object(Git, SHA1hex) -> 
-  Indexes = filelib:wildcard(filename:join(Git, "objects/pack/*.idx")),
-  lookup_via_index(Indexes, SHA1hex).
+read_packed_object(#git{path = Repo} = Git, SHA1hex) -> 
+  Indexes = filelib:wildcard(filename:join(Repo, "objects/pack/*.idx")),
+  lookup_via_index(Git, Indexes, SHA1hex).
 
-lookup_via_index([], _) ->
-  error(pack_reading_not_implemented);
+lookup_via_index(_Git, [], _) ->
+  {error, enoent};
 
-lookup_via_index([IndexFile|Indexes], SHA1) ->
+lookup_via_index(#git{} = Git, [IndexFile|Indexes], SHA1) ->
   {ok, I} = file:open(IndexFile, [raw,binary,read]),
   {ok, <<Sig:4/binary, Ver:32>>} = file:read(I, 8),
   Version = case Sig of
@@ -195,7 +202,7 @@ lookup_via_index([IndexFile|Indexes], SHA1) ->
   file:close(I),
   case proplists:get_value(SHA1, Entries) of
     undefined ->
-      lookup_via_index(Indexes, SHA1);
+      lookup_via_index(Git, Indexes, SHA1);
     Offset ->
       PackFile = re:replace(IndexFile, ".idx", ".pack", [{return,list}]),
       {ok, P} = file:open(PackFile, [binary,raw,read]),
@@ -203,7 +210,7 @@ lookup_via_index([IndexFile|Indexes], SHA1) ->
 
       file:close(P),
       % ?D({pack,SHA1, Type, Content}),
-      {ok, Type, Content}
+      {ok, Git, Type, Content}
   end.
 
 
