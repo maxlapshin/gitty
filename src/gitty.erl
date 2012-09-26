@@ -210,7 +210,7 @@ load_index(#git{path = Repo, indexes = Indexes} = Git, IndexName) ->
           [{hex(SHA), Offset} || <<Offset:32, SHA:20/binary>> <= ShaOnes]
       end,
       file:close(I),
-      ?D({add_to_index,IndexName, Indexes}),
+      % ?D({add_to_index,IndexName, Indexes}),
       Index = #index{name = IndexName, objects = Entries},
       {Index, Git#git{indexes = [Index|Indexes]}};
     #index{} = Index ->
@@ -224,13 +224,13 @@ lookup_via_index(Git, [], _) ->
   {error, Git, enoent};
 
 lookup_via_index(#git{path = Repo} = Git, [IndexFile|Indexes], SHA1) ->
-  {#index{objects = Objects}, Git1} = load_index(Git, IndexFile),
+  {#index{objects = Objects} = Index, Git1} = load_index(Git, IndexFile),
   case proplists:get_value(SHA1, Objects) of
     undefined ->
       lookup_via_index(Git1, Indexes, SHA1);
     Offset ->
       {ok, P} = file:open(filename:join([Repo,"objects/pack", IndexFile++".pack"]), [binary,raw,read]),
-      {ok, Type, Content} = unpack_object(P, Offset),
+      {ok, Type, Content} = unpack_object(P, Offset, Index),
 
       file:close(P),
       % ?D({pack,SHA1, Type, Content}),
@@ -238,7 +238,7 @@ lookup_via_index(#git{path = Repo} = Git, [IndexFile|Indexes], SHA1) ->
   end.
 
 
-unpack_object(P, Offset) ->
+unpack_object(P, Offset, Index) ->
   {ok, HeaderSize, TypeInt, Size, Bin} = case file:pread(P, Offset, 4096) of
     {ok, <<0:1, T:3, Size1:4, Bin_/binary>>} ->
       {ok, 1, T, Size1, Bin_};
@@ -251,7 +251,7 @@ unpack_object(P, Offset) ->
   % ?D({reading,SHA1,Type1,Offset,Size}),
 
   {ok, Type, Content} = if Type1 == ofs_delta orelse Type1 ==ref_delta ->
-    {ok, Type_, C} = read_delta_from_file(P, Offset, Offset + HeaderSize, Type1, Size),
+    {ok, Type_, C} = read_delta_from_file(P, Offset, Offset + HeaderSize, Type1, Size, Index),
     {ok, Type_, C};
   true ->
     C = read_zip_from_file(P, Offset+4096, Size, Bin),
@@ -278,10 +278,10 @@ read_zip_from_file(F, Offset, Size, Z, Acc) ->
   end.
 
 
-read_delta_from_file(F, OrigOffset, Offset, DeltaType, Size) ->
+read_delta_from_file(F, OrigOffset, Offset, DeltaType, Size, #index{objects = Objects} = Index) ->
   {Shift, BackOffset, Bin} = case file:pread(F, Offset, 1024) of
-    {ok, <<SHA1:40/binary, Bin_/binary>>} when DeltaType == ref_delta ->
-      throw({unimplemented,{ref_delta,SHA1}});
+    {ok, <<SHA1:20/binary, Bin_/binary>>} when DeltaType == ref_delta ->
+      {20, OrigOffset - proplists:get_value(hex(SHA1), Objects), Bin_};
     {ok, <<0:1, Base1:7,Bin_/binary>>} -> 
       {1, Base1, Bin_};
     {ok, <<1:1, Base1:7, 0:1, Base2:7, Bin_/binary>>} ->
@@ -290,7 +290,7 @@ read_delta_from_file(F, OrigOffset, Offset, DeltaType, Size) ->
       {3, ((Base1 + 1) bsl 7) bor ((Base2 + 1) bsl 7) bor Base3, Bin_}
   end,
   BaseOffset = OrigOffset - BackOffset,
-  {ok, Type, Base} = unpack_object(F, BaseOffset),
+  {ok, Type, Base} = unpack_object(F, BaseOffset, Index),
 
   Delta = read_zip_from_file(F, Offset + Shift, Size, Bin),
 
