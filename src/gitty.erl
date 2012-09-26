@@ -14,9 +14,16 @@
 show(Git, RawPath) ->
   {Tree, Path} = prepare_path(Git, RawPath),
   
-  Parts = binary:split(Path, <<"/">>, [global]),
+  
 
-  {ok, Type, Blob} = lookup(Git, Parts, Tree),
+
+  {ok, Type, Blob} = case Path of
+    <<>> -> 
+      {ok, tree, Tree} ;
+    _ ->
+      Parts = binary:split(Path, <<"/">>, [global]),
+      lookup(Git, Parts, Tree)
+  end,
 
   {ok, Type, Blob}.
 
@@ -37,7 +44,10 @@ list(Git, Path) ->
 
 
 list_tree(Git, Path, [{Name,Mode,SHA1}|Tree]) ->
-  FullName = <<Path/binary, "/", Name/binary>>,
+  FullName = case Path of
+    <<>> -> Name;
+    _ -> <<Path/binary, "/", Name/binary>>
+  end,
   case (catch read_object(Git, SHA1)) of
     {ok, blob, _Blob} ->
       [{FullName, Mode, SHA1}|list_tree(Git,Path,Tree)];
@@ -69,8 +79,6 @@ prepare_path(Git, Path) when is_binary(Path) ->
   {ok, commit, Head} = read_object(Git, SHA1),
   {ok, tree, Tree} = read_object(Git, proplists:get_value(tree, Head)),
   {Tree, RPath}.
-
-
 
 
 
