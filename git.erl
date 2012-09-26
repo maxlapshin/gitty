@@ -23,13 +23,15 @@ test2(N) ->
 main([]) ->
   code:add_pathz("ebin"),
 
-  N = 100,
+  N = 1000,
   {_T1, ok} = timer:tc(fun() -> test1(N, ".git") end),
   {_T2, ok} = timer:tc(fun() -> test2(N) end),
-  % ?D({T1,T2}),
+  % ?D({_T1,_T2}),
   % ?D(gitty:list(".git", "")),
-  {ok, Git, List} = gitty:list("test/dot_git", "nonpack:test"),
+  {ok, _Git, _List} = gitty:list("test/dot_git", "nonpack:test"),
   % ?D(Git),
   % ?D(List),
+
+  
   ok.
 
