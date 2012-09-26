@@ -191,29 +191,34 @@ lookup_via_index([IndexFile|Indexes], SHA1) ->
     Offset ->
       PackFile = re:replace(IndexFile, ".idx", ".pack", [{return,list}]),
       {ok, P} = file:open(PackFile, [binary,raw,read]),
-      {ok, TypeInt, Size, Bin} = case file:pread(P, Offset, 4096) of
-        {ok, <<0:1, T:3, Size1:4, Bin_/binary>>} ->
-          {ok, T, Size1, Bin_};
-        {ok, <<1:1, T:3, Size1:4, 0:1, Size2:7, Bin_/binary>>} ->
-          {ok, T, (Size2 bsl 4) bor Size1, Bin_};
-        {ok, <<1:1, T:3, Size1:4, 1:1, Size2:7, 0:1, Size3:7, Bin_/binary>>} ->
-          {ok, T, (Size3 bsl 11) bor (Size2 bsl 4) bor Size1, Bin_}
-      end,
-      Type1 = unpack_type(TypeInt),
-      ?D({reading,SHA1,Type1,Offset,Size}),
-
-      {ok, Type, Content} = if Type1 == ofs_delta orelse Type1 ==ref_delta ->
-        {ok, Type1, C} = read_delfa_from_file(P, Offset, Type1, Size),
-        {ok, Type1, C};
-      true ->
-        C = read_zip_from_file(P, Offset+4096, Size, Bin),
-        {ok, Type1, C}
-      end,
+      {ok, Type, Content} = unpack_object(P, Offset),
 
       file:close(P),
       % ?D({pack,SHA1, Type, Content}),
       {ok, Type, Content}
   end.
+
+
+unpack_object(P, Offset) ->
+  {ok, HeaderSize, TypeInt, Size, Bin} = case file:pread(P, Offset, 4096) of
+    {ok, <<0:1, T:3, Size1:4, Bin_/binary>>} ->
+      {ok, 1, T, Size1, Bin_};
+    {ok, <<1:1, T:3, Size1:4, 0:1, Size2:7, Bin_/binary>>} ->
+      {ok, 2, T, (Size2 bsl 4) bor Size1, Bin_};
+    {ok, <<1:1, T:3, Size1:4, 1:1, Size2:7, 0:1, Size3:7, Bin_/binary>>} ->
+      {ok, 3, T, (Size3 bsl 11) bor (Size2 bsl 4) bor Size1, Bin_}
+  end,
+  Type1 = unpack_type(TypeInt),
+  % ?D({reading,SHA1,Type1,Offset,Size}),
+
+  {ok, Type, Content} = if Type1 == ofs_delta orelse Type1 ==ref_delta ->
+    {ok, Type_, C} = read_delfa_from_file(P, Offset, Offset + HeaderSize, Type1, Size),
+    {ok, Type_, C};
+  true ->
+    C = read_zip_from_file(P, Offset+4096, Size, Bin),
+    {ok, Type1, C}
+  end,
+  {ok, Type, Content}.
 
 
 read_zip_from_file(F, Offset, Size, Zip) ->
@@ -234,8 +239,57 @@ read_zip_from_file(F, Offset, Size, Z, Acc) ->
   end.
 
 
-read_delfa_from_file(F, Offset, Type, Size) ->
-  throw({unimplemented,delta_reading}).
+read_delfa_from_file(F, OrigOffset, Offset, DeltaType, Size) ->
+  {Shift, BackOffset, Bin} = case file:pread(F, Offset, 1024) of
+    {ok, <<SHA1:40/binary, Bin_/binary>>} when DeltaType == ref_delta ->
+      throw({unimplemented,{ref_delta,SHA1}});
+    {ok, <<0:1, Base1:7,Bin_/binary>>} -> 
+      {1, Base1, Bin_};
+    {ok, <<1:1, Base1:7, 0:1, Base2:7, Bin_/binary>>} ->
+      {2, ((Base1 + 1) bsl 7) bor Base2, Bin_};
+    {ok, <<1:1, Base1:7, 1:1, Base2:7, 0:1, Base3:7, Bin_/binary>>} ->
+      {3, ((Base1 + 1) bsl 7) bor ((Base2 + 1) bsl 7) bor Base3, Bin_}
+  end,
+  BaseOffset = OrigOffset - BackOffset,
+  {ok, Type, Base} = unpack_object(F, BaseOffset),
+
+  Delta = read_zip_from_file(F, Offset + Shift, Size, Bin),
+
+  {ok, Type, patch_delta(Base, Delta)}.
+
+
+patch_delta(Base, Delta) ->
+  {SrcSize, Delta1} = var_int(Delta),
+  {DestSize, Delta2} = var_int(Delta1),
+  SrcSize == size(Base) orelse throw({broken_delta,SrcSize,DestSize}),
+  Patched = apply_patch(Delta2, Base),
+  iolist_to_binary(Patched).
+
+apply_patch(<<0:1, Count:7, Data:Count/binary, Delta/binary>>, Base) ->
+  [Data|apply_patch(Delta, Base)];
+
+apply_patch(<<1:1, SizeFlag:3, OffsetFlag:4,Delta/binary>>, Base) ->
+  {Offset, Delta1} = read_flagged_int(OffsetFlag, Delta, 0),
+  {Size, Delta2} = read_flagged_int(SizeFlag, Delta1, 0),
+
+  <<_:Offset/binary, Data:Size/binary, _/binary>> = Base,
+  [Data|apply_patch(Delta2, Base)];
+
+apply_patch(<<>>, _) ->
+  [].
+
+read_flagged_int(0, Delta, _Shift) -> {0, Delta};
+read_flagged_int(Flag, <<I, Delta/binary>>, Shift) when Flag band 1 == 1 ->
+  {Int, Delta1} = read_flagged_int(Flag bsr 1, Delta, Shift + 8),
+  {Int bor (I bsl Shift), Delta1}.
+  
+
+  % throw({unimplemented,ofs_delta}).
+
+
+var_int(<<0:1, I1:7, Rest/binary>>) -> {I1, Rest};
+var_int(<<1:1, I1:7, 0:1, I2:7, Rest/binary>>) -> {(I2 bsl 7 ) bor I1, Rest};
+var_int(<<1:1, I1:7, 1:1, I2:7, 0:1, I3:7, Rest/binary>>) -> {(I3 bsl 14) bor (I2 bsl 7 ) bor I1, Rest}.
 
 unpack_type(1) -> commit;
 unpack_type(2) -> tree;
