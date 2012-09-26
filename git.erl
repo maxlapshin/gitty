@@ -29,7 +29,7 @@ main([]) ->
   % ?D({T1,T2}),
   % ?D(gitty:list(".git", "")),
   {ok, Git, List} = gitty:list("test/dot_git", "nonpack:test"),
-  ?D(Git),
+  % ?D(Git),
   % ?D(List),
   ok.
 

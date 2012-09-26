@@ -62,7 +62,7 @@ list_tree(Git, Path, [{Name,Mode,SHA1}|Tree]) ->
       {ok, Git2, [{FullName, Mode, SHA1}|Content]};
     {ok, Git1, tree, InnerTree} ->
       {ok, Git2, Content1} = list_tree(Git1, FullName, InnerTree),
-      {ok, Git3, Content2} = list_tree(Git,Path,Tree),
+      {ok, Git3, Content2} = list_tree(Git2,Path,Tree),
       {ok, Git3, Content1 ++ Content2};
     {unimplemented,Error} ->
       ?D({unimplemented,Error, Path, Name, SHA1}),
@@ -181,7 +181,12 @@ read_raw_object(#git{path = Repo} = Git, <<Prefix:2/binary, Postfix/binary>> = S
 
 read_packed_object(#git{path = Repo} = Git, SHA1hex) -> 
   Indexes = [filename:basename(Path, ".idx") || Path <- filelib:wildcard(filename:join(Repo, "objects/pack/*.idx"))],
-  lookup_via_index(Git, Indexes, SHA1hex).
+  case lookup_via_index(Git, Indexes, SHA1hex) of
+    {ok, Git1, Type, Content} ->
+      {ok, Git1, Type, Content};
+    {error, Git1, Error} ->
+      {error, Git1, Error}
+  end.
 
 load_index(#git{path = Repo, indexes = Indexes} = Git, IndexName) ->
   case lists:keyfind(IndexName, #index.name, Indexes) of
@@ -205,7 +210,7 @@ load_index(#git{path = Repo, indexes = Indexes} = Git, IndexName) ->
           [{hex(SHA), Offset} || <<Offset:32, SHA:20/binary>> <= ShaOnes]
       end,
       file:close(I),
-      ?D({add_to_index,IndexName}),
+      ?D({add_to_index,IndexName, Indexes}),
       Index = #index{name = IndexName, objects = Entries},
       {Index, Git#git{indexes = [Index|Indexes]}};
     #index{} = Index ->
