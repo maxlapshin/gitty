@@ -38,12 +38,15 @@ list(Git, Path) ->
 
 list_tree(Git, Path, [{Name,Mode,SHA1}|Tree]) ->
   FullName = <<Path/binary, "/", Name/binary>>,
-  case read_object(Git, SHA1) of
+  case (catch read_object(Git, SHA1)) of
     {ok, blob, _Blob} ->
       [{FullName, Mode, SHA1}|list_tree(Git,Path,Tree)];
     {ok, tree, InnerTree} ->
       Content = list_tree(Git, FullName, InnerTree),
-      Content ++ list_tree(Git,Path,Tree)
+      Content ++ list_tree(Git,Path,Tree);
+    {unimplemented,Error} ->
+      ?D({unimplemented,Error, Path, Name, SHA1}),
+      list_tree(Git, Path, Tree)
   end;
 
 list_tree(_, _, []) ->
@@ -199,7 +202,9 @@ lookup_via_index([IndexFile|Indexes], SHA1) ->
       Type1 = unpack_type(TypeInt),
       ?D({reading,SHA1,Type1,Offset,Size}),
 
-      {ok, Type, Content} = if Type1 == ofs_delta orelse Type1 ==ref_delta ->error(unimplemented);
+      {ok, Type, Content} = if Type1 == ofs_delta orelse Type1 ==ref_delta ->
+        {ok, Type1, C} = read_delfa_from_file(P, Offset, Type1, Size),
+        {ok, Type1, C};
       true ->
         C = read_zip_from_file(P, Offset+4096, Size, Bin),
         {ok, Type1, C}
@@ -229,6 +234,8 @@ read_zip_from_file(F, Offset, Size, Z, Acc) ->
   end.
 
 
+read_delfa_from_file(F, Offset, Type, Size) ->
+  throw({unimplemented,delta_reading}).
 
 unpack_type(1) -> commit;
 unpack_type(2) -> tree;
