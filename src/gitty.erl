@@ -8,6 +8,9 @@
 -define(DBG(Fmt,X), io:format("~p:~p "++Fmt++"~n", [?MODULE, ?LINE| X])).
 
 
+-define(OFS_DELTA, 6).
+-define(REF_DELTA, 7).
+
 show(Git, RawPath) ->
   {Tree, Path} = prepare_path(Git, RawPath),
   
@@ -147,8 +150,92 @@ read_raw_object(Git, <<Prefix:2/binary, Postfix/binary>> = SHA1hex) when size(SH
     % {ok, <<1:1, _Type:3, _Size1:4, 1:1, _Size2:7, 1:1, _Size3:7, Zip/binary>>} -> unzip(Zip);
 
     {error, enoent} ->
-      error(enoent)
+      read_packed_object(Git, SHA1hex)
   end.
+
+
+
+read_packed_object(Git, SHA1hex) -> 
+  Indexes = filelib:wildcard(filename:join(Git, "objects/pack/*.idx")),
+  lookup_via_index(Indexes, SHA1hex).
+
+lookup_via_index([], _) ->
+  error(pack_reading_not_implemented);
+
+lookup_via_index([IndexFile|Indexes], SHA1) ->
+  {ok, I} = file:open(IndexFile, [raw,binary,read]),
+  {ok, <<Sig:4/binary, Ver:32>>} = file:read(I, 8),
+  Version = case Sig of
+    <<8#377, "tOc">> when Ver == 2 -> 2;
+    _ -> 1
+  end,
+  GlobalOffset = case Version of 1 -> 0; 2 -> 8 end,
+  FanOutCount = 256,
+  IdxOffsetSize = 4,
+  {ok, BinOffsets} = file:pread(I, GlobalOffset, FanOutCount*IdxOffsetSize),
+  IndexOffset = GlobalOffset + FanOutCount*IdxOffsetSize,
+  Offsets = [0] ++ [Offset || <<Offset:32>> <= BinOffsets],
+  EntryCount = lists:last(Offsets),
+  Entries = case Version of
+    1 -> 
+      {ok, ShaOnes} = file:pread(I, IndexOffset, 24*EntryCount),
+      [{hex(SHA), Offset} || <<Offset:32, SHA:20/binary>> <= ShaOnes]
+  end,
+  file:close(I),
+  case proplists:get_value(SHA1, Entries) of
+    undefined ->
+      lookup_via_index(Indexes, SHA1);
+    Offset ->
+      PackFile = re:replace(IndexFile, ".idx", ".pack", [{return,list}]),
+      {ok, P} = file:open(PackFile, [binary,raw,read]),
+      {ok, TypeInt, Size, Bin} = case file:pread(P, Offset, 4096) of
+        {ok, <<0:1, T:3, Size1:4, Bin_/binary>>} ->
+          {ok, T, Size1, Bin_};
+        {ok, <<1:1, T:3, Size1:4, 0:1, Size2:7, Bin_/binary>>} ->
+          {ok, T, (Size2 bsl 4) bor Size1, Bin_};
+        {ok, <<1:1, T:3, Size1:4, 1:1, Size2:7, 0:1, Size3:7, Bin_/binary>>} ->
+          {ok, T, (Size3 bsl 11) bor (Size2 bsl 4) bor Size1, Bin_}
+      end,
+      Type1 = unpack_type(TypeInt),
+      ?D({reading,SHA1,Type1,Offset,Size}),
+
+      {ok, Type, Content} = if Type1 == ofs_delta orelse Type1 ==ref_delta ->error(unimplemented);
+      true ->
+        C = read_zip_from_file(P, Offset+4096, Size, Bin),
+        {ok, Type1, C}
+      end,
+
+      file:close(P),
+      % ?D({pack,SHA1, Type, Content}),
+      {ok, Type, Content}
+  end.
+
+
+read_zip_from_file(F, Offset, Size, Zip) ->
+  Z = zlib:open(),
+  zlib:inflateInit(Z),
+  Bin = iolist_to_binary(zlib:inflate(Z, Zip)),
+  case Bin of
+    <<Reply:Size/binary, _/binary>> -> zlib:close(Z), Reply;
+    _ -> read_zip_from_file(F, Offset, Size - size(Bin), Z, Bin)
+  end.
+
+read_zip_from_file(F, Offset, Size, Z, Acc) ->
+  {ok, Zip} = file:pread(F, Offset, 4096),
+  Bin = iolist_to_binary(zlib:inflate(Z, Zip)),
+  case Bin of
+    <<Reply:Size/binary, _/binary>> -> zlib:close(Z), <<Acc/binary, Reply/binary>>;
+    _ -> read_zip_from_file(F, Offset + 4096, Size - size(Bin), Z, <<Acc/binary, Bin/binary>>)
+  end.
+
+
+
+unpack_type(1) -> commit;
+unpack_type(2) -> tree;
+unpack_type(3) -> blob;
+unpack_type(4) -> tag;
+unpack_type(6) -> ofs_delta;
+unpack_type(7) -> ref_delta;
 
 unpack_type(<<"blob">>) -> blob;
 unpack_type(<<"commit">>) -> commit;

@@ -23,9 +23,9 @@ test2(N) ->
 main([]) ->
   code:add_pathz("ebin"),
 
-  % N = 1000,
-  % {T1, ok} = timer:tc(fun() -> test1(N) end),
-  % {T2, ok} = timer:tc(fun() -> test2(N) end),
+  N = 100,
+  {_T1, ok} = timer:tc(fun() -> test1(N) end),
+  {_T2, ok} = timer:tc(fun() -> test2(N) end),
   % ?D({T1,T2}),
   % ?D(gitty:list(".git", "src")),
   ?D(gitty:list("test/dot_git", "nonpack:test")),

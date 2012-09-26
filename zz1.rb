@@ -5,7 +5,7 @@ $:.unshift("../grit/lib")
 
 require 'grit'
 
-  repo = Grit::Repo.new(".git")
+repo = Grit::Repo.new(".git")
 
 t1 = Time.now
 
