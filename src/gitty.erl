@@ -57,7 +57,11 @@ list(Git, Path) when is_list(Path) ->
 list(Git, Path) ->
   case show(Git, Path) of
     {ok, Git1, tree, Tree} ->
-      list_tree(Git1, Path, Tree);
+      Dir = case binary:split(Path, <<":">>) of
+        [D] -> D;
+        [_Branch, D] -> D
+      end,
+      list_tree(Git1, Dir, Tree);
     {ok, _, _, _} ->
       {error, enotdir};
     {error, Error} ->
@@ -179,7 +183,6 @@ read_raw_object(#git{path = Repo} = Git, <<Prefix:2/binary, Postfix/binary>> = S
     {ok, <<16#78, W2, _/binary>> = Zip} when (16#7800 bor W2) rem 31 == 0 -> 
       [Header, Content] = binary:split(unzip(Zip), <<0>>),
       [Type, Size] = binary:split(Header, <<" ">>),
-      ?D({read_direct,SHA1hex}),
       unpack_size(Size) == size(Content) orelse erlang:error({invalid_size, unpack_size(Size), size(Content)}),
       {ok, Git, unpack_type(Type), Content};
     % git-ruby/internal/loose.rb#unpack_object_header_gently
@@ -224,7 +227,6 @@ load_index(#git{path = Repo, indexes = Indexes} = Git, IndexName) ->
           [{hex(SHA), Offset} || <<Offset:32, SHA:20/binary>> <= ShaOnes]
       end,
       file:close(I),
-      % ?D({add_to_index,IndexName, Indexes}),
       Index = #index{name = IndexName, objects = Entries},
       {Index, Git#git{indexes = [Index|Indexes]}};
     #index{} = Index ->
@@ -244,11 +246,9 @@ lookup_via_index(#git{path = Repo} = Git, [IndexFile|Indexes], SHA1) ->
       lookup_via_index(Git1, Indexes, SHA1);
     Offset ->
       {ok, P} = file:open(filename:join([Repo,"objects/pack", IndexFile++".pack"]), [binary,raw,read]),
-      ?D({unpack,SHA1}),
       {ok, Type, Content} = unpack_object(P, Offset, Index),
 
       file:close(P),
-      % ?D({pack,SHA1, Type, Content}),
       {ok, Git1, Type, Content}
   end.
 
@@ -263,7 +263,6 @@ unpack_object(P, Offset, Index) ->
       {ok, 3, T, (Size3 bsl 11) bor (Size2 bsl 4) bor Size1, Bin_}
   end,
   Type1 = unpack_type(TypeInt),
-  ?D({reading,Type1,Offset,Size}),
 
   {ok, Type, Content} = if Type1 == ofs_delta orelse Type1 ==ref_delta ->
     {ok, Type_, C} = read_delta_from_file(P, Offset, Offset + HeaderSize, Type1, Size, Index),
@@ -360,7 +359,6 @@ unpack_type(<<"tag">>) -> tag.
 unpack_size(Bin) -> list_to_integer(binary_to_list(Bin)).
 
 unzip(Zip) ->
-  % ?D({inflate, Zip}),
   % Z = zlib:open(),
   % Raw = zlib:inflate(Z, Zip),
   % zlib:close(Z).
@@ -394,6 +392,16 @@ show_test() ->
   double_check("dot_git", "6fc18f69e9b74eafb4a58a6fcbd218adc0d80c36"), % blob in pack
   double_check("dot_git", "d8c6431e0a82b6b1bd4db339ee536f8bd4099c8f"), % ofs_delta in pack
   % double_check("dot_git", "6fc18f69e9b74eafb4a58a6fcbd218adc0d8bbaa"), % unexistent
+  ok.
+
+list_test() ->
+  ?assertMatch({ok, _, [
+    {<<"README">>, <<"100644">>,<<"cd0d7186badd8fcfbfbdf35a0b9f2c8aaf465e77">>},
+    {<<"src/script.sh">>, <<"100644">>,<<"5172f17ee080fb2e922d2b44c031aa41845694ee">>}
+  ]}, list(fixture("small_git"), "master:")),
+  ?assertMatch({ok, _, [
+    {<<"src/script.sh">>, <<"100644">>,<<"5172f17ee080fb2e922d2b44c031aa41845694ee">>}
+  ]}, list(fixture("small_git"), "master:src")),
   ok.
 
 read1_test() ->
