@@ -27,8 +27,9 @@ main([]) ->
   {_T1, ok} = timer:tc(fun() -> test1(N, ".git") end),
   {_T2, ok} = timer:tc(fun() -> test2(N) end),
   % ?D({T1,T2}),
-  ?D(gitty:list(".git", "")),
-  % List = gitty:list("test/dot_git", "nonpack:test"),
+  % ?D(gitty:list(".git", "")),
+  {ok, Git, List} = gitty:list("test/dot_git", "nonpack:test"),
+  ?D(Git),
   % ?D(List),
   ok.
 

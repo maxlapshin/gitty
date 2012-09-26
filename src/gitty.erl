@@ -13,7 +13,13 @@
 
 
 -record(git, {
-  path
+  path,
+  indexes = []
+}).
+
+-record(index, {
+  name,
+  objects = []
 }).
 
 show(Git, RawPath) ->
@@ -174,43 +180,56 @@ read_raw_object(#git{path = Repo} = Git, <<Prefix:2/binary, Postfix/binary>> = S
 
 
 read_packed_object(#git{path = Repo} = Git, SHA1hex) -> 
-  Indexes = filelib:wildcard(filename:join(Repo, "objects/pack/*.idx")),
+  Indexes = [filename:basename(Path, ".idx") || Path <- filelib:wildcard(filename:join(Repo, "objects/pack/*.idx"))],
   lookup_via_index(Git, Indexes, SHA1hex).
 
-lookup_via_index(_Git, [], _) ->
-  {error, enoent};
+load_index(#git{path = Repo, indexes = Indexes} = Git, IndexName) ->
+  case lists:keyfind(IndexName, #index.name, Indexes) of
+    false ->
+      {ok, I} = file:open(filename:join([Repo, "objects/pack", IndexName++".idx"]), [raw,binary,read]),
+      {ok, <<Sig:4/binary, Ver:32>>} = file:read(I, 8),
+      Version = case Sig of
+        <<8#377, "tOc">> when Ver == 2 -> 2;
+        _ -> 1
+      end,
+      GlobalOffset = case Version of 1 -> 0; 2 -> 8 end,
+      FanOutCount = 256,
+      IdxOffsetSize = 4,
+      {ok, BinOffsets} = file:pread(I, GlobalOffset, FanOutCount*IdxOffsetSize),
+      IndexOffset = GlobalOffset + FanOutCount*IdxOffsetSize,
+      Offsets = [0] ++ [Offset || <<Offset:32>> <= BinOffsets],
+      EntryCount = lists:last(Offsets),
+      Entries = case Version of
+        1 -> 
+          {ok, ShaOnes} = file:pread(I, IndexOffset, 24*EntryCount),
+          [{hex(SHA), Offset} || <<Offset:32, SHA:20/binary>> <= ShaOnes]
+      end,
+      file:close(I),
+      ?D({add_to_index,IndexName}),
+      Index = #index{name = IndexName, objects = Entries},
+      {Index, Git#git{indexes = [Index|Indexes]}};
+    #index{} = Index ->
+      {Index, Git}
+  end.
 
-lookup_via_index(#git{} = Git, [IndexFile|Indexes], SHA1) ->
-  {ok, I} = file:open(IndexFile, [raw,binary,read]),
-  {ok, <<Sig:4/binary, Ver:32>>} = file:read(I, 8),
-  Version = case Sig of
-    <<8#377, "tOc">> when Ver == 2 -> 2;
-    _ -> 1
-  end,
-  GlobalOffset = case Version of 1 -> 0; 2 -> 8 end,
-  FanOutCount = 256,
-  IdxOffsetSize = 4,
-  {ok, BinOffsets} = file:pread(I, GlobalOffset, FanOutCount*IdxOffsetSize),
-  IndexOffset = GlobalOffset + FanOutCount*IdxOffsetSize,
-  Offsets = [0] ++ [Offset || <<Offset:32>> <= BinOffsets],
-  EntryCount = lists:last(Offsets),
-  Entries = case Version of
-    1 -> 
-      {ok, ShaOnes} = file:pread(I, IndexOffset, 24*EntryCount),
-      [{hex(SHA), Offset} || <<Offset:32, SHA:20/binary>> <= ShaOnes]
-  end,
-  file:close(I),
-  case proplists:get_value(SHA1, Entries) of
+
+
+
+lookup_via_index(Git, [], _) ->
+  {error, Git, enoent};
+
+lookup_via_index(#git{path = Repo} = Git, [IndexFile|Indexes], SHA1) ->
+  {#index{objects = Objects}, Git1} = load_index(Git, IndexFile),
+  case proplists:get_value(SHA1, Objects) of
     undefined ->
-      lookup_via_index(Git, Indexes, SHA1);
+      lookup_via_index(Git1, Indexes, SHA1);
     Offset ->
-      PackFile = re:replace(IndexFile, ".idx", ".pack", [{return,list}]),
-      {ok, P} = file:open(PackFile, [binary,raw,read]),
+      {ok, P} = file:open(filename:join([Repo,"objects/pack", IndexFile++".pack"]), [binary,raw,read]),
       {ok, Type, Content} = unpack_object(P, Offset),
 
       file:close(P),
       % ?D({pack,SHA1, Type, Content}),
-      {ok, Git, Type, Content}
+      {ok, Git1, Type, Content}
   end.
 
 
@@ -227,7 +246,7 @@ unpack_object(P, Offset) ->
   % ?D({reading,SHA1,Type1,Offset,Size}),
 
   {ok, Type, Content} = if Type1 == ofs_delta orelse Type1 ==ref_delta ->
-    {ok, Type_, C} = read_delfa_from_file(P, Offset, Offset + HeaderSize, Type1, Size),
+    {ok, Type_, C} = read_delta_from_file(P, Offset, Offset + HeaderSize, Type1, Size),
     {ok, Type_, C};
   true ->
     C = read_zip_from_file(P, Offset+4096, Size, Bin),
@@ -254,7 +273,7 @@ read_zip_from_file(F, Offset, Size, Z, Acc) ->
   end.
 
 
-read_delfa_from_file(F, OrigOffset, Offset, DeltaType, Size) ->
+read_delta_from_file(F, OrigOffset, Offset, DeltaType, Size) ->
   {Shift, BackOffset, Bin} = case file:pread(F, Offset, 1024) of
     {ok, <<SHA1:40/binary, Bin_/binary>>} when DeltaType == ref_delta ->
       throw({unimplemented,{ref_delta,SHA1}});
