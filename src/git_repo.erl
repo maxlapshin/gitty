@@ -2,6 +2,7 @@
 -author('Max Lapshin <max@maxidoors.ru>').
 
 -export([init/1, path/1, read_object/2]).
+-export([refs/1]).
 -include("log.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
@@ -12,6 +13,7 @@
 
 -record(git, {
   path,
+  refs,
   indexes = []
 }).
 
@@ -29,6 +31,18 @@ init(#git{} = Git) ->
 path(#git{path = Path}) -> Path.
 
 
+
+refs(#git{refs = Refs} = Git) when is_list(Refs) ->
+  {ok, Git, Refs};
+
+refs(#git{path = Path, refs = undefined} = Git) ->
+  {ok, Git, []}.
+
+
+
+read_file(Path) ->
+  {ok,Bin} = file:read_file(Path),
+  binary:replace(Bin, <<"\n">>, <<>>).
 
 
 
@@ -266,4 +280,19 @@ hex_test() ->
 
 unhex_test() ->
   ?assertEqual(<<1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20>>, unhex(<<"0102030405060708090a0b0c0d0e0f1011121314">>)).
+
+
+fixture(Path) ->
+  init(gitty:fixture(Path) ).
+
+refs_test() ->
+  ?assertMatch({ok, _, [{<<"nonpack">>, <<"ca8a30f5a7f0f163bbe3b6f0abf18a6c83b0687a">>}]}, refs(fixture("dot_git"))),
+  ?assertMatch({ok, _, [{<<"master">>, <<"b68b3f9327206f81dd9bd1c4347bacaad05bc09f">>}]}, refs(fixture("small_git"))),
+  ?assertMatch({ok, _, [{<<"master">>, <<"6a65f190f18b3e8b5e64daab193a944ba7897a62">>}]}, refs(fixture("v2_git"))).
+
+
+
+
+
+
 

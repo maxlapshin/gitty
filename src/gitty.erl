@@ -1,6 +1,7 @@
 -module(gitty).
 
 -export([show/2, list/2]).
+-export([fixture/1]).
 
 -include_lib("eunit/include/eunit.hrl").
 -include("log.hrl").
@@ -81,18 +82,18 @@ prepare_path(Git, Path) when is_list(Path) ->
   prepare_path(Git, list_to_binary(Path));
 
 prepare_path(Git, Path) when is_binary(Path) ->
-  Repo = git_repo:path(Git),
+  {ok, Git1, Refs} = git_repo:refs(Git),
   {SHA1, RealPath} = case binary:split(Path, <<":">>) of
     [Branch, Path_] when size(Branch) == 40 ->
       {Branch, Path_};
     [Branch, Path_] ->
-      {read_file(filename:join([Repo, "refs/heads", Branch])), Path_};
+      {proplists:get_value(Branch, Refs), Path_};
     [Path_] ->
-      {read_file(filename:join([Repo, "refs/heads/master"])), Path_}
+      {proplists:get_value(<<"master">>, Refs), Path_}
   end,
-  {ok, Git1, commit, Head} = git_repo:read_object(Git, SHA1),
-  {ok, Git2, tree, Tree} = git_repo:read_object(Git1, proplists:get_value(tree, Head)),
-  {ok, Git2, Tree, RealPath}.
+  {ok, Git2, commit, Head} = git_repo:read_object(Git1, SHA1),
+  {ok, Git3, tree, Tree} = git_repo:read_object(Git2, proplists:get_value(tree, Head)),
+  {ok, Git3, Tree, RealPath}.
 
 
 
@@ -114,12 +115,6 @@ lookup(Git, [Part|Parts], Tree) ->
       {error, enoent}
   end.
 
-
-
-
-read_file(Path) ->
-  {ok,Bin} = file:read_file(Path),
-  binary:replace(Bin, <<"\n">>, <<>>).
 
 
 
