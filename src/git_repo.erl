@@ -3,6 +3,8 @@
 
 -export([init/1, path/1, read_object/2]).
 -export([refs/1]).
+
+-export([put_raw_object/3]).
 -include("log.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
@@ -83,10 +85,8 @@ unhex(<<>>) -> <<>>;
 unhex(<<"\n">>) -> <<>>;
 unhex(<<H1,H2,Hex/binary>>) -> <<(list_to_integer([H1,H2], 16)), (unhex(Hex))/binary>>.
 
-hex(<<>>) -> <<>>;
-hex(<<H, Raw/binary>>) ->
-  [H1,H2] = string:to_lower(lists:flatten(io_lib:format("~2.16.0B", [H]))),
-  <<H1, H2, (hex(Raw))/binary>>.
+hex(Binary) when is_binary(Binary) ->
+  iolist_to_binary([string:to_lower(lists:flatten(io_lib:format("~2.16.0B", [H]))) || <<H>> <= Binary]).
 
 
 
@@ -290,6 +290,20 @@ unpack_type(<<"tag">>) -> tag.
 
 unpack_size(Bin) -> list_to_integer(binary_to_list(Bin)).
 
+
+put_raw_object(Git, Type, Content) when 
+  (Type == commit orelse Type == tree orelse Type == blob orelse Type == tag) ->
+  #git{path = Repo} = Git1 = init(Git),
+  Header = io_lib:format("~s ~B", [Type, iolist_size(Content)]),
+  Store = [Header, 0, Content],
+  SHA1 = <<Prefix:2/binary, Postfix/binary>> = hex(crypto:sha(Store)),
+  Path = filename:join([Repo, "objects", Prefix, Postfix]),
+  filelib:ensure_dir(Path),
+  file:write_file(Path, zlib:compress(Store)),
+  {ok, Git1, SHA1}.
+
+
+
 unzip(Zip) ->
   % Z = zlib:open(),
   % Raw = zlib:inflate(Z, Zip),
@@ -318,6 +332,13 @@ refs_test() ->
   ?assertMatch({ok, _, [{<<"master">>, <<"b68b3f9327206f81dd9bd1c4347bacaad05bc09f">>}]}, refs(fixture("small_git"))),
   ?assertMatch({ok, _, [{<<"master">>, <<"6a65f190f18b3e8b5e64daab193a944ba7897a62">>}]}, refs(fixture("v2_git"))).
 
+
+put_raw_object_test() ->
+  TempDir = gitty:fixture("temp_git"),
+  ?assertMatch({ok, _, <<"e7a891c5b186c734bc98fd2af8946417b80d4f0c">>}, put_raw_object(TempDir, blob, "simple blob")),
+  ?assertMatch({ok, _}, file:read_file_info(TempDir++"/objects/e7/a891c5b186c734bc98fd2af8946417b80d4f0c")),
+  os:cmd("rm -rf "++ TempDir),
+  ok.
 
 
 
