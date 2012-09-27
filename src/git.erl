@@ -68,7 +68,7 @@ commit(Repo, Options) ->
 bm() ->
   N = 1000,
   List = lists:seq(1,N),
-  {Time, Res} = timer:tc(fun() -> [show("../doc", "doc/playlist.md") || _ <- List] end),
+  {Time, _Res} = timer:tc(fun() -> [show("../doc", "doc/playlist.md") || _ <- List] end),
   Time.
 
   
