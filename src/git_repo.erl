@@ -36,9 +36,12 @@ refs(#git{refs = Refs} = Git) when is_list(Refs) ->
   {ok, Git, Refs};
 
 refs(#git{path = Repo, refs = undefined} = Git) ->
-  DirectRefs = [
-    {list_to_binary(filename:basename(Path)), read_file(Path)} ||
-    Path <- filelib:wildcard(filename:join([Repo, "refs/heads/*"]))],
+  DirectRefs = lists:flatmap(fun(Path) ->
+    case read_file(Path) of
+      <<SHA1:40/binary>> -> [{list_to_binary(filename:basename(Path)), SHA1}];
+      _ -> []
+    end
+  end, filelib:wildcard(filename:join([Repo, "refs/heads/*"]))),
   PackedRefs = case file:read_file(filename:join(Repo, "packed-refs")) of
     {ok, Packs} ->
       lists:flatmap(fun(Row) ->
