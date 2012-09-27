@@ -35,8 +35,23 @@ path(#git{path = Path}) -> Path.
 refs(#git{refs = Refs} = Git) when is_list(Refs) ->
   {ok, Git, Refs};
 
-refs(#git{path = Path, refs = undefined} = Git) ->
-  {ok, Git, []}.
+refs(#git{path = Repo, refs = undefined} = Git) ->
+  DirectRefs = [
+    {list_to_binary(filename:basename(Path)), read_file(Path)} ||
+    Path <- filelib:wildcard(filename:join([Repo, "refs/heads/*"]))],
+  PackedRefs = case file:read_file(filename:join(Repo, "packed-refs")) of
+    {ok, Packs} ->
+      lists:flatmap(fun(Row) ->
+        case re:run(Row, "^([\\da-fA-F]{40}) refs/heads/([\\w/]+)$", [{capture,all_but_first,binary}]) of
+          {match, [SHA1, Ref]} -> [{Ref, SHA1}];
+          nomatch -> []
+        end
+      end, binary:split(Packs, <<"\n">>, [global]));
+    {error, _} ->
+      []
+  end,
+  Refs = lists:sort(DirectRefs ++ PackedRefs),
+  {ok, Git#git{refs = Refs}, Refs}.
 
 
 
@@ -286,7 +301,13 @@ fixture(Path) ->
   init(gitty:fixture(Path) ).
 
 refs_test() ->
-  ?assertMatch({ok, _, [{<<"nonpack">>, <<"ca8a30f5a7f0f163bbe3b6f0abf18a6c83b0687a">>}]}, refs(fixture("dot_git"))),
+  ?assertMatch({ok, _, [
+    {<<"master">>, <<"ca8a30f5a7f0f163bbe3b6f0abf18a6c83b0687a">>},
+    {<<"nonpack">>, <<"ca8a30f5a7f0f163bbe3b6f0abf18a6c83b0687a">>},
+    {<<"test/chacon">>, <<"ca8a30f5a7f0f163bbe3b6f0abf18a6c83b0687a">>},
+    {<<"test/master">>, <<"2d3acf90f35989df8f262dc50beadc4ee3ae1560">>},
+    {<<"testing">>, <<"2d3acf90f35989df8f262dc50beadc4ee3ae1560">>}
+  ]}, refs(fixture("dot_git"))),
   ?assertMatch({ok, _, [{<<"master">>, <<"b68b3f9327206f81dd9bd1c4347bacaad05bc09f">>}]}, refs(fixture("small_git"))),
   ?assertMatch({ok, _, [{<<"master">>, <<"6a65f190f18b3e8b5e64daab193a944ba7897a62">>}]}, refs(fixture("v2_git"))).
 
