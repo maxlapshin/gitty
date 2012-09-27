@@ -151,6 +151,12 @@ list_test() ->
   ]}, list(fixture("small_git"), "master:src")),
   ok.
 
+list_v2_test() ->
+  ?assertMatch({ok, _, [
+    {<<"packed.txt">>,<<"100644">>, <<"506b0eefeb6e99da974e1ef2ba14a2470692c50a">>}
+  ]}, list(fixture("v2_git"), "master:")).
+
+
 read1_test() ->
   ?assertMatch({ok, _, blob, <<"80f136f\n">>}, show(fixture("dot_git"), "nonpack:test/fixtures/rev_parse")).
 

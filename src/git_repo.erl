@@ -149,7 +149,11 @@ load_index(#git{path = Repo, indexes = Indexes} = Git, IndexName) ->
       Entries = case Version of
         1 -> 
           {ok, ShaOnes} = file:pread(I, IndexOffset, 24*EntryCount),
-          [{hex(SHA), Offset} || <<Offset:32, SHA:20/binary>> <= ShaOnes]
+          [{hex(SHA), Offset} || <<Offset:32, SHA:20/binary>> <= ShaOnes];
+        2 ->
+          {ok, ShaOnes} = file:pread(I, IndexOffset, 20*EntryCount),
+          {ok, Offsets1} = file:pread(I, IndexOffset + 24*EntryCount, 4*EntryCount),
+          lists:zip([hex(SHA) || <<SHA:20/binary>> <= ShaOnes], [Offset || <<Offset:32>> <= Offsets1])
       end,
       file:close(I),
       Index = #index{name = IndexName, objects = Entries},
