@@ -266,7 +266,9 @@ apply_patch(<<>>, _) ->
 read_flagged_int(0, Delta, _Shift) -> {0, Delta};
 read_flagged_int(Flag, <<I, Delta/binary>>, Shift) when Flag band 1 == 1 ->
   {Int, Delta1} = read_flagged_int(Flag bsr 1, Delta, Shift + 8),
-  {Int bor (I bsl Shift), Delta1}.
+  {Int bor (I bsl Shift), Delta1};
+read_flagged_int(Flag, Delta, Shift) when Flag band 1 == 0 ->
+  read_flagged_int(Flag bsr 1, Delta, Shift + 8).
   
 
   % throw({unimplemented,ofs_delta}).
