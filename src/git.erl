@@ -2,11 +2,10 @@
 
 -compile(export_all).
 
-git_cmd(Cmd) ->
+git_cmd(Args) ->
   % io:format("GIT: ~s~n", [Cmd]),
   Tag = make_ref(),
   GitPath = os:find_executable("git"),
-  ["git" | Args] = string:tokens(Cmd, " "),
   {Pid,Mref} = erlang:spawn_monitor(
 	  fun() ->
 		  process_flag(trap_exit, true),
@@ -23,7 +22,7 @@ git_cmd(Cmd) ->
 
 
 git_cmd(Repo, Cmd) ->
-  git_cmd("git --git-dir="++Repo++" "++Cmd).
+  git_cmd(["--git-dir=" ++ Repo | Cmd]).
 
 get_data(Port) ->
   receive
@@ -35,7 +34,7 @@ get_data(Port) ->
 
 
 tree(Repo) ->
-  Reply = git_cmd(Repo, "ls-tree --full-tree -r HEAD"),
+  Reply = git_cmd(Repo, ["ls-tree", "--full-tree", "-r", "HEAD"]),
   Rows1 = binary:split(Reply, <<"\n">>, [global]),
   Rows2 = [case re:run(Row, "^\\d+ (\\w+) (\\w+)\t(.+)$", [{capture,all_but_first,list}]) of
     {match, [Type, SHA1, Path]} -> {Type, SHA1, Path};
@@ -46,20 +45,20 @@ tree(Repo) ->
 
 
 show(Repo, Path) ->
-  Reply = git_cmd(Repo, "show master:"++Path),
+  Reply = git_cmd(Repo, ["show", "master:" ++ Path]),
   Reply.
 
 
 add(Repo, Path) ->
-  git_cmd(Repo, "add "++Path).
+  git_cmd(Repo, ["add", Path]).
 
 commit(Repo, Options) ->
-  Cmd = "commit " ++ case proplists:get_value(message, Options) of
-    undefined -> "";
-    Msg -> "-m "++Msg++" "
+  Cmd = ["commit"] ++ case proplists:get_value(message, Options) of
+    undefined -> [];
+    Msg -> ["-m", Msg]
   end ++ case proplists:get_value(author, Options) of
-    undefined -> "";
-    Auth -> "--author="++Auth++" "
+    undefined -> [];
+    Auth -> ["--author=" ++ Auth]
   end,
   git_cmd(Repo, Cmd).
 
