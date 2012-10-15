@@ -3,6 +3,7 @@
 
 -export([init/1, path/1, read_object/2]).
 -export([refs/1]).
+-export([commit_files/4]).
 
 -export([put_raw_object/3]).
 -include("log.hrl").
