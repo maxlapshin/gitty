@@ -1,6 +1,6 @@
 -module(gitty).
 
--export([show/2, list/2]).
+-export([show/2, list/2, commit_files/4]).
 -export([fixture/1]).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -114,6 +114,11 @@ lookup(Git, [Part|Parts], Tree) ->
     false ->
       {error, enoent}
   end.
+
+
+commit_files(Git, Branch, Files, Options) ->
+  {ok, Git1} = git_repo:commit_files(Git, Branch, Files, Options),
+  {ok, Git1}.
 
 
 

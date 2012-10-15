@@ -100,8 +100,22 @@ parse_tree(Content) ->
 
 parse_commit(Commit) ->
   [Header, Message] = binary:split(Commit, <<"\n\n">>),
-  [<<"tree ",TreeHex/binary>>|_Headers] = binary:split(Header, <<"\n">>),
-  [{tree,TreeHex},{message,Message}].
+  Content = [{message,Message}|parse_commit_headers(binary:split(Header, <<"\n">>))],
+  Content.
+
+parse_commit_headers([<<"tree ", TreeHex/binary>>|Headers]) ->
+  [{tree,TreeHex}|parse_commit_headers(Headers)];
+parse_commit_headers([<<"parent ", Parent/binary>>|Headers]) ->
+  [{parent,Parent}|parse_commit_headers(Headers)];
+parse_commit_headers([<<"author ", Author/binary>>|Headers]) ->
+  [{author,Author}|parse_commit_headers(Headers)];
+parse_commit_headers([<<"commiter ", Commiter/binary>>|Headers]) ->
+  [{commiter,Commiter}|parse_commit_headers(Headers)];
+parse_commit_headers([_|Headers]) ->
+  parse_commit_headers(Headers);
+parse_commit_headers([]) ->
+  [].
+
 
 
 read_raw_object(#git{path = Repo} = Git, <<Prefix:2/binary, Postfix/binary>> = SHA1hex) when size(SHA1hex) == 40 ->
@@ -305,6 +319,107 @@ put_raw_object(Git, Type, Content) when
   {ok, Git1, SHA1}.
 
 
+write_tree(Tree) ->
+  iolist_to_binary([<<Mode/binary, " ", Name/binary, 0, (unhex(SHA1))/binary>> || {Name, Mode, SHA1} <- Tree]).
+
+
+
+add_to_index(Git1, Path, Mode, BlobSha) when is_list(Path) ->
+  add_to_index(Git1, list_to_binary(Path), Mode, BlobSha);
+
+add_to_index(Git1, Path1, Mode, BlobSha) ->
+  {ok, Git2, Type, _} = read_raw_object(Git1, BlobSha),
+  {ok, Git3, Refs} = refs(Git2),
+  Type == blob orelse throw({cant_add_non_blob,BlobSha,Type}),
+  {ParentCommit, RealPath} = case binary:split(Path1, <<":">>) of
+    [Branch, Path_] when size(Branch) == 40 ->
+      {Branch, Path_};
+    [Branch, Path_] ->
+      {proplists:get_value(Branch, Refs), Path_};
+    [Path_] ->
+      {proplists:get_value(<<"master">>, Refs), Path_}
+  end,
+  {ok, Git4, commit, OldHead} = read_object(Git3, ParentCommit),
+  OldTreeSha = proplists:get_value(tree, OldHead),
+  add_to_tree(Git4, OldTreeSha, RealPath, Mode, BlobSha).
+
+add_to_tree(Git1, OldTreeSha, Path, Mode, BlobSha) when is_list(Path) ->
+  add_to_tree(Git1, OldTreeSha, list_to_binary(Path), Mode, BlobSha);
+
+add_to_tree(Git1, OldTreeSha, Path, Mode, BlobSha) when is_list(Mode) ->
+  add_to_tree(Git1, OldTreeSha, Path, list_to_binary(Mode), BlobSha);
+
+add_to_tree(Git1, OldTreeSha, Path, Mode, BlobSha) when is_list(BlobSha) ->
+  add_to_tree(Git1, OldTreeSha, Path, Mode, list_to_binary(BlobSha));
+
+add_to_tree(Git1, OldTreeSha, Path, Mode, BlobSha) ->
+  Parts = binary:split(Path, <<"/">>, [global]),
+  {ok, Git2, NewTreeSha} = walk_down_tree(Git1, OldTreeSha, Parts, Mode, BlobSha),
+  {ok, Git2, NewTreeSha}.
+
+
+walk_down_tree(Git1, OldTreeSha, [Path], Mode, BlobSha) ->
+  {ok, Git2, tree, OldTree} = read_object(Git1, OldTreeSha),
+  NewTree = lists:keystore(Path, 1, OldTree, {Path, Mode, BlobSha}),
+  {ok, Git3, NewTreeSha} = put_raw_object(Git2, tree, write_tree(NewTree)),
+  {ok, Git3, NewTreeSha};
+
+walk_down_tree(Git1, OldTreeSha, [Path|Parts], Mode, BlobSha) ->
+  {ok, Git2, tree, OldTree} = read_object(Git1, OldTreeSha),
+  io:format("Content: ~p ~p~n", [Path, [A || {A,_,_} <- OldTree]]),
+  case lists:keyfind(Path, 1, OldTree) of
+    {Path, <<"40000">> = DirMode, NextSha} ->
+      {ok, Git3, NewSha} = walk_down_tree(Git2, NextSha, Parts, Mode, BlobSha),
+      NewTree = lists:keystore(Path, 1, OldTree, {Path, DirMode, NewSha}),
+      {ok, Git4, NewTreeSha} = put_raw_object(Git3, tree, write_tree(NewTree)),
+      {ok, Git4, NewTreeSha};
+    {Path, BadMode, _} ->
+      throw({cant_add,Path, BadMode, Parts});
+    false ->
+      throw({not_implemented_adding_new_dir,Path})
+  end.
+
+to_b(List) when is_list(List) -> list_to_binary(List);
+to_b(Binary) when is_binary(Binary) -> Binary;
+to_b(undefined) -> undefined.
+
+
+put_raw_commit(Git1, Parent, TreeSha, Options) ->
+  Message = to_b(proplists:get_value(message, Options, "default commit message")),
+  Author = to_b(proplists:get_value(author, Options, "nobody@localhost")),
+  {Mega, Sec, _} = erlang:now(),
+  UTC = list_to_binary(integer_to_list(Mega*1000000 + Sec)),
+  Content = <<"tree ", TreeSha/binary, "\n",
+    "parent ", Parent/binary, "\n",
+    "author ", Author/binary, " ", UTC/binary, " +0000\n",
+    "\n",
+    Message/binary>>,
+  {ok, Git2, CommitSha} = put_raw_object(Git1, commit, Content),
+  {ok, Git2, CommitSha}.
+
+
+
+commit_files(Git1, Head_, Files, Options) ->
+  Head = to_b(Head_),
+  {ok, Git2, Refs} = refs(init(Git1)),
+  {Head, ParentCommit} = lists:keyfind(Head, 1, Refs),
+
+  {ok, Git3, commit, OldHead} = read_object(Git2, ParentCommit),
+  OldTreeSha = proplists:get_value(tree, OldHead),
+
+  {ok, Git4, NewTreeSha} = lists:foldl(fun({Path,Mode,Content}, {ok, Git1_, OldTree}) ->
+    {ok, Git1_1, BlobSha} = put_raw_object(Git1_, blob, Content),
+    add_to_tree(Git1_1, OldTree, Path, Mode, BlobSha)
+  end, {ok, Git3,OldTreeSha}, Files),
+
+  {ok, #git{refs = Refs1, path = Path} = Git5, CommitSha} = put_raw_commit(Git4, ParentCommit, NewTreeSha, Options),
+  Git6 = Git5#git{refs = lists:keystore(Head, 1, Refs1, {Head, CommitSha})},
+  RefPath = filename:join([Path, "refs/heads", Head]),
+  filelib:ensure_dir(RefPath),
+  file:write_file(RefPath, CommitSha),
+  {ok, Git6}.
+
+
 
 unzip(Zip) ->
   % Z = zlib:open(),
@@ -335,14 +450,59 @@ refs_test() ->
   ?assertMatch({ok, _, [{<<"master">>, <<"6a65f190f18b3e8b5e64daab193a944ba7897a62">>}]}, refs(fixture("v2_git"))).
 
 
-put_raw_object_test() ->
-  TempDir = gitty:fixture("temp_git"),
-  ?assertMatch({ok, _, <<"e7a891c5b186c734bc98fd2af8946417b80d4f0c">>}, put_raw_object(TempDir, blob, "simple blob")),
-  ?assertMatch({ok, _}, file:read_file_info(TempDir++"/objects/e7/a891c5b186c734bc98fd2af8946417b80d4f0c")),
-  os:cmd("rm -rf "++ TempDir),
+put_raw_object_test_() ->
+  {foreach,
+  fun() ->
+    Tempdir = gitty:fixture("temp_git"),
+    os:cmd("rm -rf "++ Tempdir),
+    os:cmd("cp -rf "++gitty:fixture("dot_git")++" "++Tempdir),
+    Tempdir
+  end,
+  fun(Tempdir) ->
+    os:cmd("rm -rf "++ Tempdir)
+  end,
+  [
+    {with, [fun test_put_raw_object/1]}
+    ,{with, [fun test_make_tree/1]}
+    ,{with, [fun test_raw_commit_files/1]}
+    ,{with, [fun test_commit_files/1]}
+  ]
+  }.
+
+test_put_raw_object(Tempdir) ->
+  ?assertMatch({ok, _, <<"e7a891c5b186c734bc98fd2af8946417b80d4f0c">>}, put_raw_object(Tempdir, blob, "simple blob")),
+  ?assertMatch({ok, _}, file:read_file_info(Tempdir++"/objects/e7/a891c5b186c734bc98fd2af8946417b80d4f0c")),
   ok.
 
 
+test_make_tree(Tempdir) ->
+  {ok, Git1, BlobSha} = put_raw_object(Tempdir, blob, "simple blob"),
+  Result = add_to_index(Git1, "master:lib/grit/git-ruby/file.txt", "100644", BlobSha),
+  ?assertMatch({ok, _, _}, Result),
+  {ok, Git2, SHA1} = Result,
+  ?assertMatch({ok, _, tree, _}, read_object(Git2, SHA1)),
+  {ok, _, tree, Tree} = read_object(Git2, SHA1),
+  ?assertMatch({<<"lib">>, <<"40000">>, _}, lists:keyfind(<<"lib">>, 1, Tree)),
+  ok.
+
+
+test_raw_commit_files(Tempdir) ->
+  {ok, Git1, BlobSha} = put_raw_object(Tempdir, blob, "simple blob"),
+  {ok, Git2, TreeSha1} = add_to_index(Git1, "master:lib/grit/git-ruby/file.txt", "100644", BlobSha),
+  {ok, #git{refs = Refs} = Git3, TreeSha2} = add_to_tree(Git2, TreeSha1, "lib/grit/a.txt", "100644", BlobSha),
+  Parent = proplists:get_value(<<"master">>, Refs),
+  Result = put_raw_commit(Git3, Parent, TreeSha2, [{message,"Test commit"},{author, "author@host"}]),
+  ?assertMatch({ok, _, _}, Result),
+  ok.
+
+test_commit_files(Tempdir) ->
+  ?assertMatch({ok, _}, commit_files(Tempdir, "master", [
+    {"lib/grit/git-ruby/file.txt", "100644", "simple blob"},
+    {"lib/grit/file5.txt", "100644", "another blob"}
+  ], [{message, "test commit"},{author,"test@commiter"}])),
+  ?assertMatch({ok, _, blob, <<"simple blob">>}, gitty:show(Tempdir, "master:lib/grit/git-ruby/file.txt")),
+  ?assertMatch({ok, _, blob, <<"another blob">>}, gitty:show(Tempdir, "master:lib/grit/file5.txt")),
+  ok.
 
 
 
