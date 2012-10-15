@@ -395,7 +395,7 @@ to_b(undefined) -> undefined.
 
 put_raw_commit(Git1, Parent, TreeSha, Options) ->
   Message = to_b(proplists:get_value(message, Options, "default commit message")),
-  Author = to_b(proplists:get_value(author, Options, "nobody@localhost")),
+  Author = to_b(proplists:get_value(author, Options, "Gitty <gitty@maxidoors.ru>")),
   {Mega, Sec, _} = erlang:now(),
   UTC = list_to_binary(integer_to_list(Mega*1000000 + Sec)),
   Content = <<"tree ", TreeSha/binary, "\n",
