@@ -359,26 +359,34 @@ add_to_tree(Git1, OldTreeSha, Path, Mode, BlobSha) ->
   {ok, Git2, NewTreeSha}.
 
 
+walk_tree(Git, undefined) ->
+  {ok, Git, []};
+walk_tree(Git, SHA1) ->
+  {ok, Git2, tree, Tree} = read_object(Git, SHA1), {ok, Git2, Tree}.
+
+
 walk_down_tree(Git1, OldTreeSha, [Path], Mode, BlobSha) ->
-  {ok, Git2, tree, OldTree} = read_object(Git1, OldTreeSha),
+  {ok, Git2, OldTree} = walk_tree(Git1, OldTreeSha),
   NewTree = lists:keystore(Path, 1, OldTree, {Path, Mode, BlobSha}),
   {ok, Git3, NewTreeSha} = put_raw_object(Git2, tree, write_tree(NewTree)),
   {ok, Git3, NewTreeSha};
 
 walk_down_tree(Git1, OldTreeSha, [Path|Parts], Mode, BlobSha) ->
-  {ok, Git2, tree, OldTree} = read_object(Git1, OldTreeSha),
-  io:format("Content: ~p ~p~n", [Path, [A || {A,_,_} <- OldTree]]),
-  case lists:keyfind(Path, 1, OldTree) of
-    {Path, <<"40000">> = DirMode, NextSha} ->
-      {ok, Git3, NewSha} = walk_down_tree(Git2, NextSha, Parts, Mode, BlobSha),
-      NewTree = lists:keystore(Path, 1, OldTree, {Path, DirMode, NewSha}),
-      {ok, Git4, NewTreeSha} = put_raw_object(Git3, tree, write_tree(NewTree)),
-      {ok, Git4, NewTreeSha};
+  {ok, Git2, OldTree} = walk_tree(Git1, OldTreeSha),
+  NextSha = case lists:keyfind(Path, 1, OldTree) of
+    {Path, <<"40000">>, NextSha_} ->
+      NextSha_;
     {Path, BadMode, _} ->
       throw({cant_add,Path, BadMode, Parts});
     false ->
-      throw({not_implemented_adding_new_dir,Path})
-  end.
+      undefined
+  end,
+  {ok, Git3, NewSha} = walk_down_tree(Git2, NextSha, Parts, Mode, BlobSha),
+  NewTree = lists:keystore(Path, 1, OldTree, {Path, <<"40000">>, NewSha}),
+  {ok, Git4, NewTreeSha} = put_raw_object(Git3, tree, write_tree(NewTree)),
+  {ok, Git4, NewTreeSha}.
+
+
 
 to_b(List) when is_list(List) -> list_to_binary(List);
 to_b(Binary) when is_binary(Binary) -> Binary;
@@ -414,11 +422,29 @@ commit_files(Git1, Head_, Files, Options) ->
   end, {ok, Git3,OldTreeSha}, Files),
 
   {ok, #git{refs = Refs1, path = Path} = Git5, CommitSha} = put_raw_commit(Git4, ParentCommit, NewTreeSha, Options),
-  Git6 = Git5#git{refs = lists:keystore(Head, 1, Refs1, {Head, CommitSha})},
-  RefPath = filename:join([Path, "refs/heads", Head]),
-  filelib:ensure_dir(RefPath),
-  file:write_file(RefPath, CommitSha),
+  Refs2 = lists:keystore(Head, 1, Refs1, {Head, CommitSha}),
+  Git6 = Git5#git{refs = Refs2},
+  PackedRefs = filename:join([Path, "packed-refs"]),
+  case file:read_file(PackedRefs) of
+    {ok, Bin} ->
+      Lines1 = binary:split(Bin, <<"\n">>, [global]),
+      Lines2 = replace_packed_ref(Head, CommitSha, Lines1),
+      file:write_file(PackedRefs, [[L,"\n"] || L <- Lines2]);
+    {error, enoent} ->      
+      RefPath = filename:join([Path, "refs/heads", Head]),
+      filelib:ensure_dir(RefPath),
+      file:write_file(RefPath, CommitSha)
+  end,
   {ok, Git6}.
+
+replace_packed_ref(Head, SHA1, [<<_OldSHA:40/binary, " refs/heads/", Head/binary>>|Lines]) ->
+  [<<SHA1:40/binary, " refs/heads/", Head/binary>>|Lines];
+replace_packed_ref(Head, SHA1, []) ->
+  [<<SHA1:40/binary, " refs/heads/", Head/binary>>];
+replace_packed_ref(Head, SHA1, [<<>>]) ->
+  replace_packed_ref(Head, SHA1, []);
+replace_packed_ref(Head, SHA1, [Line|Lines]) ->
+  [Line|replace_packed_ref(Head, SHA1, Lines)].
 
 
 
@@ -463,8 +489,9 @@ put_raw_object_test_() ->
     os:cmd("rm -rf "++ Tempdir)
   end,
   [
-    {with, [fun test_put_raw_object/1]}
+     {with, [fun test_put_raw_object/1]}
     ,{with, [fun test_make_tree/1]}
+    ,{with, [fun test_make_new_dir/1]}
     ,{with, [fun test_raw_commit_files/1]}
     ,{with, [fun test_commit_files/1]}
   ]
@@ -486,6 +513,14 @@ test_make_tree(Tempdir) ->
   ?assertMatch({<<"lib">>, <<"40000">>, _}, lists:keyfind(<<"lib">>, 1, Tree)),
   ok.
 
+test_make_new_dir(Tempdir) ->
+  {ok, Git1, BlobSha} = put_raw_object(Tempdir, blob, "simple blob"),
+  Result = add_to_index(Git1, "master:new1/new2/file.txt", "100644", BlobSha),
+  ?assertMatch({ok, _, _}, Result),
+  ok.
+
+
+
 
 test_raw_commit_files(Tempdir) ->
   {ok, Git1, BlobSha} = put_raw_object(Tempdir, blob, "simple blob"),
@@ -499,10 +534,12 @@ test_raw_commit_files(Tempdir) ->
 test_commit_files(Tempdir) ->
   ?assertMatch({ok, _}, commit_files(Tempdir, "master", [
     {"lib/grit/git-ruby/file.txt", "100644", "simple blob"},
-    {"lib/grit/file5.txt", "100644", "another blob"}
+    {"lib/grit/file5.txt", "100644", "another blob"},
+    {"new1/new2/file2.txt", "100644", "new blob"}
   ], [{message, "test commit"},{author,"test@commiter"}])),
   ?assertMatch({ok, _, blob, <<"simple blob">>}, gitty:show(Tempdir, "master:lib/grit/git-ruby/file.txt")),
   ?assertMatch({ok, _, blob, <<"another blob">>}, gitty:show(Tempdir, "master:lib/grit/file5.txt")),
+  ?assertMatch({ok, _, blob, <<"new blob">>}, gitty:show(Tempdir, "master:new1/new2/file2.txt")),
   ok.
 
 
