@@ -19,7 +19,7 @@ show(Git, Path) ->
   case re:run(Path, ":") of
     {match, _} -> show_file_by_path(Git, Path);
     nomatch when size(Path) == 40 -> git_repo:read_object(Git, Path);
-    _ -> {error, enoent}
+    _ -> show_file_by_path(Git, Path)
   end.
 
 show_file_by_path(Git, RawPath) ->
@@ -144,6 +144,10 @@ show_test() ->
   double_check("dot_git", "6fc18f69e9b74eafb4a58a6fcbd218adc0d80c36"), % blob in pack
   double_check("dot_git", "d8c6431e0a82b6b1bd4db339ee536f8bd4099c8f"), % ofs_delta in pack
   % double_check("dot_git", "6fc18f69e9b74eafb4a58a6fcbd218adc0d8bbaa"), % unexistent
+  ok.
+
+show1_test() ->
+  ?assertMatch({ok, _, blob, _}, show(fixture("dot_git"), "README.txt")),
   ok.
 
 list_test() ->
