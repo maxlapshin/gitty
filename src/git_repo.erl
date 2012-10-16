@@ -204,7 +204,8 @@ lookup_via_index(#git{path = Repo} = Git, [IndexFile|Indexes], SHA1) ->
 
 
 unpack_object(P, Offset, Index) ->
-  {ok, HeaderSize, TypeInt, Size, Bin} = case file:pread(P, Offset, 4096) of
+  ReadAhead = 4096,
+  {ok, HeaderSize, TypeInt, Size, Bin} = case file:pread(P, Offset, ReadAhead) of
     {ok, <<0:1, T:3, Size1:4, Bin_/binary>>} ->
       {ok, 1, T, Size1, Bin_};
     {ok, <<1:1, T:3, Size1:4, 0:1, Size2:7, Bin_/binary>>} ->
@@ -220,7 +221,7 @@ unpack_object(P, Offset, Index) ->
     {ok, Type_, C} = read_delta_from_file(P, Offset, Offset + HeaderSize, Type1, Size, Index),
     {ok, Type_, C};
   true ->
-    C = read_zip_from_file(P, Offset+4096, Size, Bin),
+    C = read_zip_from_file(P, Offset+ReadAhead, Size, Bin),
     {ok, Type1, C}
   end,
   {ok, Type, Content}.
@@ -260,7 +261,7 @@ read_delta_from_file(F, OrigOffset, Offset, DeltaType, Size, #index{objects = Ob
   BaseOffset = OrigOffset - BackOffset,
   {ok, Type, Base} = unpack_object(F, BaseOffset, Index),
 
-  Delta = read_zip_from_file(F, Offset + Shift, Size, Bin),
+  Delta = read_zip_from_file(F, Offset + Shift + size(Bin), Size, Bin),
 
   {ok, Type, patch_delta(Base, Delta)}.
 
@@ -403,11 +404,13 @@ to_b(undefined) -> undefined.
 put_raw_commit(Git1, Parent, TreeSha, Options) ->
   Message = to_b(proplists:get_value(message, Options, "default commit message")),
   Author = to_b(proplists:get_value(author, Options, "Gitty <gitty@maxidoors.ru>")),
+  Commiter = to_b(proplists:get_value(commiter, Options, Author)),
   {Mega, Sec, _} = erlang:now(),
   UTC = list_to_binary(integer_to_list(Mega*1000000 + Sec)),
   Content = <<"tree ", TreeSha/binary, "\n",
     "parent ", Parent/binary, "\n",
     "author ", Author/binary, " ", UTC/binary, " +0000\n",
+    "commiter ", Commiter/binary, " ", UTC/binary, " +0000\n",
     "\n",
     Message/binary>>,
   {ok, Git2, CommitSha} = put_raw_object(Git1, commit, Content),
