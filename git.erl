@@ -23,15 +23,15 @@ test2(N) ->
 main([]) ->
   code:add_pathz("ebin"),
 
-  N = 1,
+  N = 1000,
   {_T1, ok} = timer:tc(fun() -> test1(N, ".git") end),
   {_T2, ok} = timer:tc(fun() -> test2(N) end),
 
   % ?D(gitty:show("test/dot_git", "d8c6431e0a82b6b1bd4db339ee536f8bd4099c8f")),
-  % ?D({_T1,_T2}),
+  ?DBG("Cached access: ~.3f, non-cached access: ~.3f", [_T1 / 1000000, _T2 / 1000000]),
   % ?D(gitty:list(".git", "")),
   % ?D(gitty:list("test/small_git", "master:")),
-  ?D(gitty:list("../grit/test/dot_git_spaces", "master:")),
+  % ?D(gitty:list("../grit/test/dot_git_spaces", "master:")),
   % {ok, _Git, _List} = gitty:list("test/dot_git", "nonpack:test"),
   % ?D(Git),
   % ?D(_List),
