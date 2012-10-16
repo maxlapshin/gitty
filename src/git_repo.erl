@@ -72,7 +72,10 @@ read_object(Git, SHA1hex) when length(SHA1hex) == 40 ->
   read_object(Git, list_to_binary(SHA1hex));
 
 read_object(Git, SHA1) when is_binary(SHA1)->
-  {ok, Git1, Type, Content} = read_raw_object(Git, SHA1),
+  {ok, Git1, Type, Content} = try read_raw_object(Git, SHA1)
+  catch
+    Class:Error -> erlang:raise(Class, {gitty_error, SHA1, Error}, erlang:get_stacktrace())
+  end,
   C = case Type of
     tree -> parse_tree(Content);
     commit -> parse_commit(Content);
@@ -207,7 +210,9 @@ unpack_object(P, Offset, Index) ->
     {ok, <<1:1, T:3, Size1:4, 0:1, Size2:7, Bin_/binary>>} ->
       {ok, 2, T, (Size2 bsl 4) bor Size1, Bin_};
     {ok, <<1:1, T:3, Size1:4, 1:1, Size2:7, 0:1, Size3:7, Bin_/binary>>} ->
-      {ok, 3, T, (Size3 bsl 11) bor (Size2 bsl 4) bor Size1, Bin_}
+      {ok, 3, T, (Size3 bsl 11) bor (Size2 bsl 4) bor Size1, Bin_};
+    {ok, <<1:1, T:3, Size1:4, 1:1, Size2:7, 1:1, Size3:7, 0:1, Size4:7, Bin_/binary>>} ->
+      {ok, 4, T, (Size4 bsl 18) bor (Size3 bsl 11) bor (Size2 bsl 4) bor Size1, Bin_}
   end,
   Type1 = unpack_type(TypeInt),
 
@@ -248,7 +253,9 @@ read_delta_from_file(F, OrigOffset, Offset, DeltaType, Size, #index{objects = Ob
     {ok, <<1:1, Base1:7, 0:1, Base2:7, Bin_/binary>>} ->
       {2, ((Base1 + 1) bsl 7) bor Base2, Bin_};
     {ok, <<1:1, Base1:7, 1:1, Base2:7, 0:1, Base3:7, Bin_/binary>>} ->
-      {3, ((Base1 + 1) bsl 7) bor ((Base2 + 1) bsl 7) bor Base3, Bin_}
+      {3, ((Base1 + 1) bsl 14) bor ((Base2 + 1) bsl 7) bor Base3, Bin_};
+    {ok, <<1:1, Base1:7, 1:1, Base2:7, 1:1, Base3:7, 0:1, Base4:7, Bin_/binary>>} ->
+      {4, ((Base1 + 1) bsl 21) bor ((Base2 + 1) bsl 14) bor ((Base3 + 1) bsl 7) bor Base4, Bin_}
   end,
   BaseOffset = OrigOffset - BackOffset,
   {ok, Type, Base} = unpack_object(F, BaseOffset, Index),
@@ -475,6 +482,15 @@ refs_test() ->
   ]}, refs(fixture("dot_git"))),
   ?assertMatch({ok, _, [{<<"master">>, <<"b68b3f9327206f81dd9bd1c4347bacaad05bc09f">>}]}, refs(fixture("small_git"))),
   ?assertMatch({ok, _, [{<<"master">>, <<"6a65f190f18b3e8b5e64daab193a944ba7897a62">>}]}, refs(fixture("v2_git"))).
+
+
+read_raw_object1_test() ->
+  ?assertMatch({ok, _, blob, _}, read_raw_object(init(gitty:fixture("erlydoc_git")), <<"3869e362cd6e2def2fa6d1164551765b1cca7aef">>)).
+
+
+read_raw_object2_test() ->
+  ?assertMatch({ok, _, blob, _}, read_raw_object(init(gitty:fixture("erlydoc_git")), <<"8652f8a1f65788ddb713f01bc282e23ecfcb6026">>)).
+
 
 
 put_raw_object_test_() ->
