@@ -146,6 +146,7 @@ show_test() ->
   % double_check("dot_git", "6fc18f69e9b74eafb4a58a6fcbd218adc0d8bbaa"), % unexistent
   ok.
 
+
 show1_test() ->
   ?assertMatch({ok, _, blob, _}, show(fixture("dot_git"), "README.txt")),
   ok.
@@ -168,6 +169,11 @@ list_v2_test() ->
 
 read1_test() ->
   ?assertMatch({ok, _, blob, <<"80f136f\n">>}, show(fixture("dot_git"), "nonpack:test/fixtures/rev_parse")).
+
+full_repo_read_test() ->
+  {ok, Git, List} = list(fixture("erlydoc_git"), "master:"),
+  [?assertMatch({ok, _, blob, _}, show(Git, Path)) || {Path, _, _SHA1} <- List],
+  ok.
 
 
 
