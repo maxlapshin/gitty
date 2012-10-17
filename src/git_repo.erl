@@ -229,10 +229,17 @@ unpack_object(P, Offset, Index) ->
 
 read_zip_from_file(F, Offset, Size, Zip) ->
   Z = zlib:open(),
+  try read_zip_from_file0(F, Offset, Size, Zip, Z)
+  after
+    zlib:inflateEnd(Z),
+    zlib:close(Z)
+  end.
+
+read_zip_from_file0(F, Offset, Size, Zip, Z) ->
   zlib:inflateInit(Z),
   Bin = iolist_to_binary(zlib:inflate(Z, Zip)),
   case Bin of
-    <<Reply:Size/binary, _/binary>> -> zlib:close(Z), Reply;
+    <<Reply:Size/binary, _/binary>> -> Reply;
     _ -> read_zip_from_file(F, Offset, Size - size(Bin), Z, Bin)
   end.
 
@@ -240,7 +247,7 @@ read_zip_from_file(F, Offset, Size, Z, Acc) ->
   {ok, Zip} = file:pread(F, Offset, 4096),
   Bin = iolist_to_binary(zlib:inflate(Z, Zip)),
   case Bin of
-    <<Reply:Size/binary, _/binary>> -> zlib:close(Z), <<Acc/binary, Reply/binary>>;
+    <<Reply:Size/binary, _/binary>> -> <<Acc/binary, Reply/binary>>;
     _ -> read_zip_from_file(F, Offset + 4096, Size - size(Bin), Z, <<Acc/binary, Bin/binary>>)
   end.
 
