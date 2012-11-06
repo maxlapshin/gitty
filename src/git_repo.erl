@@ -26,7 +26,17 @@
 }).
 
 init(Path) when is_list(Path) ->
-  #git{path = Path};
+  case file:read_file_info(filename:join(Path, "objects")) of
+    {ok, _} ->
+      #git{path = Path};
+    {error, _} ->
+      case file:read_file_info(filename:join(Path, ".git/objects")) of
+        {ok, _} ->
+          #git{path = filename:join(Path, ".git")};
+        {error, _} ->
+          error({invalid_git_repo_path,Path})
+      end
+  end;
 
 init(#git{} = Git) ->
   Git.

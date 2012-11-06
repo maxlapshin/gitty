@@ -15,17 +15,17 @@ show(Git, Path) when is_list(Path) ->
 show(Git, Path) when is_list(Git) ->
   show(git_repo:init(Git), Path);
 
-show(Git, Path) ->
+show(Git, Path) when is_tuple(Git) andalso is_binary(Path) ->
   case re:run(Path, ":") of
     {match, _} -> show_file_by_path(Git, Path);
     nomatch when size(Path) == 40 -> git_repo:read_object(Git, Path);
     _ -> show_file_by_path(Git, Path)
   end.
 
-show_file_by_path(Git, RawPath) ->
+show_file_by_path(Git, RawPath) when is_tuple(Git) andalso is_binary(RawPath) ->
   {ok, Git1, Tree, Path} = prepare_path(git_repo:init(Git), RawPath),
 
-  {ok, Git2, Type, Blob} = case Path of
+  Reply = case Path of
     <<>> -> 
       {ok, Git1, tree, Tree} ;
     _ ->
@@ -33,7 +33,7 @@ show_file_by_path(Git, RawPath) ->
       lookup(Git1, Parts, Tree)
   end,
 
-  {ok, Git2, Type, Blob}.
+  Reply.
 
 
 
@@ -91,6 +91,7 @@ prepare_path(Git, Path) when is_binary(Path) ->
     [Path_] ->
       {proplists:get_value(<<"master">>, Refs), Path_}
   end,
+  is_binary(SHA1) orelse error({cant_find_master_for,Path}),
   {ok, Git2, commit, Head} = git_repo:read_object(Git1, SHA1),
   {ok, Git3, tree, Tree} = git_repo:read_object(Git2, proplists:get_value(tree, Head)),
   {ok, Git3, Tree, RealPath}.
@@ -150,6 +151,9 @@ show_test() ->
 show1_test() ->
   ?assertMatch({ok, _, blob, _}, show(fixture("dot_git"), "README.txt")),
   ok.
+
+not_existent_test() ->
+  ?assertEqual({error, enoent}, gitty:show(fixture("small_git"), "ru/non_existent.html")).
 
 list_test() ->
   ?assertMatch({ok, _, [
